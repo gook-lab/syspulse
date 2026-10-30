@@ -4,7 +4,7 @@ Claude Code·Codex 같은 에이전트에게 이 문서 링크를 주고 아래�
 
 > https://github.com/gook-lab/syspulse/blob/main/INSTALL.md 보고 SysPulse 설치해줘
 
-에이전트가 소스를 받아 이 맥에서 직접 빌드한 뒤 `~/Applications` 에 넣고 실행합니다. 직접 빌드한 앱이라 Gatekeeper 경고가 뜨지 않고, 관리자 권한도 필요 없습니다. 보통 2~3분 걸립니다. 업데이트도 같은 방식으로 "SysPulse 업데이트해줘"라고 하면 됩니다.
+에이전트가 소스를 받아 이 맥에서 직접 빌드한 뒤 `~/Applications` 에 넣고 실행합니다. 직접 빌드한 앱이라 Gatekeeper 경고가 뜨지 않고, 관리자 권한도 필요 없습니다. 빌드는 15초 안팎, 전체는 1분 정도 걸립니다. 업데이트도 같은 방식으로 "SysPulse 업데이트해줘"라고 하면 됩니다.
 
 ## 설치 뒤 사람이 할 일 — 메뉴 막대 확인 · 로그인 시 실행
 
