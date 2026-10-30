@@ -529,19 +529,27 @@ private struct StrayRow: View {
             Spacer(minLength: 6)
             CPUText(cores: stray.cpu)
             Text(Format.bytes(stray.footprint)).monospacedDigit()
-            // 두 번 눌러야 끈다 — 4초 안에 「확인」을 누르지 않으면 되돌아간다
-            Button(confirming ? "확인" : "종료") {
-                if confirming {
-                    confirming = false
-                    monitor.terminate(stray)
-                } else {
-                    confirming = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) { confirming = false }
-                }
+            if let progress = monitor.quitting["stray:\(stray.id)"] {
+                QuittingLabel(stalled: progress.stalled)
+            } else {
+                confirmButton
             }
-            .buttonStyle(PillButtonStyle(tint: confirming ? .red : nil))
         }
         .font(.callout)
+    }
+
+    // 두 번 눌러야 끈다 — 4초 안에 「확인」을 누르지 않으면 되돌아간다
+    private var confirmButton: some View {
+        Button(confirming ? "확인" : "종료") {
+            if confirming {
+                confirming = false
+                monitor.terminate(stray)
+            } else {
+                confirming = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { confirming = false }
+            }
+        }
+        .buttonStyle(PillButtonStyle(tint: confirming ? .red : nil))
     }
 }
 
@@ -596,7 +604,9 @@ private struct AppRow: View {
                 Spacer(minLength: 8)
                 CPUText(cores: row.cpu)
                 Text(Format.bytes(row.footprint)).monospacedDigit()
-                if row.killable {
+                if progress != nil {
+                    Spinner().frame(width: 14, height: 14)
+                } else if row.killable {
                     Button { confirming.toggle() } label: {
                         Image(systemName: confirming ? "xmark.circle.fill" : "xmark.circle")
                     }
@@ -607,7 +617,10 @@ private struct AppRow: View {
                 }
             }
             .font(.callout)
-            if confirming && row.killable {
+            .opacity(progress == nil ? 1 : 0.55)
+            if let progress {
+                quittingDetail(progress)
+            } else if confirming && row.killable {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 6) {
                         message
@@ -622,6 +635,34 @@ private struct AppRow: View {
                 .padding(.leading, 24)
             }
         }
+    }
+
+    private var progress: QuitProgress? { monitor.quitting[row.id] }
+
+    @ViewBuilder
+    private func quittingDetail(_ progress: QuitProgress) -> some View {
+        if progress.stalled && !progress.force {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) { stalledMessage; Spacer(minLength: 4); forceButton }
+                VStack(alignment: .leading, spacing: 4) { stalledMessage; forceButton }
+            }
+            .padding(.leading, 24)
+        } else {
+            Text(progress.stalled ? "아직 남아 있습니다 — 권한 밖 프로세스일 수 있습니다"
+                 : progress.force ? "강제 종료 중…" : "종료 중…")
+                .font(.caption2).foregroundStyle(.secondary)
+                .padding(.leading, 24)
+        }
+    }
+
+    private var stalledMessage: some View {
+        Text("응답이 없습니다 — 저장 확인 창이 떠 있을 수 있습니다")
+            .font(.caption2).foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var forceButton: some View {
+        Button("강제 종료") { monitor.quit(row, force: true) }.buttonStyle(PillButtonStyle(tint: .red))
     }
 
     private var message: some View {
@@ -918,6 +959,31 @@ private struct TabButtonStyle: ButtonStyle {
             .background(Capsule().fill(Color.primary.opacity(selected ? 0.14 : configuration.isPressed ? 0.08 : 0)))
             .contentShape(Capsule())
             .fixedSize()
+    }
+}
+
+// AppKit 진행 표시기는 스냅샷에 자리표시자로 찍혀서 도형으로 그린다
+private struct Spinner: View {
+    var body: some View {
+        TimelineView(.animation) { context in
+            let turn = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.9) / 0.9
+            Circle().trim(from: 0, to: 0.7)
+                .stroke(Color.secondary, style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+                .rotationEffect(.degrees(turn * 360))
+                .padding(1)
+        }
+    }
+}
+
+private struct QuittingLabel: View {
+    let stalled: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Spinner().frame(width: 12, height: 12)
+            Text(stalled ? "응답 없음" : "종료 중…").font(.caption).foregroundStyle(stalled ? .orange : .secondary)
+        }
+        .fixedSize()
     }
 }
 

@@ -3,6 +3,14 @@ import Combine
 import ServiceManagement
 import UserNotifications
 
+// 종료를 누른 뒤 실제로 꺼질 때까지의 상태 — 줄에 「종료 중…」을 띄우는 데 쓴다
+struct QuitProgress {
+    let token = UUID()
+    let force: Bool
+    let started = Date()
+    var stalled = false // 정상 종료가 한참 안 끝남 (저장 확인 창 등) → 강제 종료를 권한다
+}
+
 struct ProcessRow: Identifiable {
     let id: String
     let name: String
@@ -40,6 +48,7 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var alertThresholdGB: Int
     @Published private(set) var loginError: String?
     @Published private(set) var usage: [AgentUsage] = []
+    @Published private(set) var quitting: [String: QuitProgress] = [:] // 키: 앱 줄 id 또는 "stray:<pid>"
 
     let hardware = Metrics.hardware()
     let bootDate = Metrics.bootDate()
@@ -212,9 +221,42 @@ final class SystemMonitor: ObservableObject {
 
     func terminate(_ stray: StrayTree) {
         AgentAnalysis.terminate(stray)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            MainActor.assumeIsolated { self?.sample() }
+        track("stray:\(stray.id)", members: stray.members, force: false)
+    }
+
+    // 0.4초마다 묶음의 프로세스가 남았는지 본다. 다 꺼지면 바로 다시 샘플해 줄을 지운다.
+    // 정상 종료는 8초(강제는 5초) 넘게 남아 있으면 stalled, 60초가 지나면 추적을 그만둔다.
+    private func track(_ key: String, members: [(pid: pid_t, start: UInt64)], force: Bool) {
+        let progress = QuitProgress(force: force)
+        quitting[key] = progress
+        poll(key, members: members, token: progress.token)
+    }
+
+    private func poll(_ key: String, members: [(pid: pid_t, start: UInt64)], token: UUID) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, var progress = self.quitting[key], progress.token == token else { return }
+                let alive = members.contains { Metrics.bsdInfo(of: $0.pid)?.pbi_start_tvsec == $0.start }
+                let elapsed = Date().timeIntervalSince(progress.started)
+                if !alive || elapsed > 60 {
+                    self.quitting[key] = nil
+                    self.sample()
+                    return
+                }
+                if !progress.stalled, elapsed > (progress.force ? 5 : 8) {
+                    progress.stalled = true
+                    self.quitting[key] = progress
+                }
+                self.poll(key, members: members, token: token)
+            }
         }
+    }
+
+    // 스냅샷 전용: 종료 중 줄 모양 확인
+    func previewQuitting(_ key: String, stalled: Bool) {
+        var progress = QuitProgress(force: false)
+        progress.stalled = stalled
+        quitting[key] = progress
     }
 
     // MARK: 앱 · 프로세스 종료
@@ -234,9 +276,7 @@ final class SystemMonitor: ObservableObject {
                 kill(member.pid, force ? SIGKILL : SIGTERM)
             }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            MainActor.assumeIsolated { self?.sample() }
-        }
+        track(row.id, members: row.members, force: force)
     }
 
     // MARK: 로그인 시 실행

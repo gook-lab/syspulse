@@ -10,6 +10,7 @@ enum Entry {
             let width = args.firstIndex(of: "--width").flatMap { $0 + 1 < args.count ? Double(args[$0 + 1]) : nil }
             let duration = args.firstIndex(of: "--duration").flatMap { $0 + 1 < args.count ? Double(args[$0 + 1]) : nil }
             Snapshot.render(to: args[index + 1], tab: tab ?? .agents, confirmFirst: args.contains("--confirm-first"),
+                            quittingFirst: args.contains("--quitting-first"),
                             width: width.map { CGFloat($0) }, light: args.contains("--light"), duration: duration)
             return
         }
@@ -198,13 +199,20 @@ private struct NotchHelpView: View {
 
 enum Snapshot {
     // --duration 초: 그동안 2초마다 샘플해 세션 추세까지 쌓는다 (추세는 2분 넘게 쌓여야 나온다)
-    @MainActor static func render(to path: String, tab: ListTab, confirmFirst: Bool = false, width: CGFloat? = nil,
+    @MainActor static func render(to path: String, tab: ListTab, confirmFirst: Bool = false, quittingFirst: Bool = false,
+                                  width: CGFloat? = nil,
                                   light: Bool = false, duration: Double? = nil) {
         let monitor = SystemMonitor(autoStart: false)
         let steps = duration.map { max(Int($0 / 2), 1) } ?? 8
         for _ in 0..<steps {
             Thread.sleep(forTimeInterval: duration == nil ? 0.4 : 2)
             monitor.sample()
+        }
+        if quittingFirst {
+            // 끌 수 있는 첫 두 줄: 하나는 종료 중, 하나는 응답 없음
+            for (index, row) in monitor.apps.filter(\.killable).prefix(2).enumerated() {
+                monitor.previewQuitting(row.id, stalled: index == 1)
+            }
         }
         for session in monitor.sessions {
             let trend = session.trend.map { "\($0 / 1_048_576)MB/\(session.trendMinutes)분" } ?? "-"
