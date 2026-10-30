@@ -2,6 +2,10 @@
 
 메뉴 막대에 CPU 사용률과 가용 메모리를 띄우는 macOS 앱입니다. 누르면 코어별 부하·메모리 구성, Claude·Codex 구독 사용량과 함께, 에이전트 세션별·앱별로 메모리·CPU 를 얼마나 쓰는지 보여 주고 바로 정리할 수 있습니다. Orca 로 에이전트를 여러 개 돌릴 때 하나 더 띄울 여유가 있는지 가늠하려고 만들었습니다.
 
+## 설치 — 에이전트에게 링크로
+
+Claude Code·Codex 에게 "https://github.com/gook-lab/syspulse/blob/main/INSTALL.md 보고 SysPulse 설치해줘"라고 하면 됩니다. 절차와 막히는 곳은 [INSTALL.md](INSTALL.md) 에 있습니다.
+
 ## 빌드 · 설치 — swiftc 단일 스크립트
 
 Xcode 프로젝트 없이 `swiftc` 로 바로 `.app` 을 만듭니다 (macOS 14 이상, Xcode Command Line Tools 필요). 애플 실리콘·인텔 공용(universal) 바이너리로 묶습니다.
