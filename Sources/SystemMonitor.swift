@@ -57,6 +57,8 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var removingWorktrees: Set<String> = []
     @Published private(set) var worktreeErrors: [String: String] = [:]
     private var lastWorktreeScan: Date?
+    @Published private(set) var ports: [ListeningPort] = []
+    private var branches: [String: String] = [:] // 작업 폴더 → 브랜치 (포트 지도용, 한 번만 묻는다)
     @Published private(set) var update: UpdateInfo?
     @Published private(set) var updating = false
     @Published private(set) var updateMessage: String? // 확인 결과·실패 이유
@@ -117,8 +119,9 @@ final class SystemMonitor: ObservableObject {
         (sessions, strays) = analysis
         attachPaneKeys()
         loadAverage = Metrics.loadAverage()
-        if samples % 15 == 0, notifies { refreshUsage() } // 사용량은 30초마다, Orca CLI 를 부르니 백그라운드에서
-        if samples % 5 == 0, notifies { refreshActivity() } // 입력 대기는 10초마다
+        if samples % 30 == 0, notifies { refreshUsage() } // 사용량은 1분마다, Orca CLI 를 부르니 백그라운드에서
+        if notifies, activityDue() { refreshActivity() }
+        if samples % 5 == 0 { refreshPorts() } // 포트는 10초마다 (libproc 만 써서 가볍다)
         if samples == 3 || samples % 900 == 0, notifies { refreshWorktrees() } // worktree 는 켤 때와 30분마다
         if samples == 10 || samples % 10_800 == 0, notifies { checkUpdate() } // 업데이트는 켠 뒤 20초, 그다음 6시간마다
         samples += 1
@@ -196,6 +199,32 @@ final class SystemMonitor: ObservableObject {
         }
     }
 
+    // Orca CLI 는 한 번에 CPU 0.2초쯤 써서 무작정 자주 부르지 않는다.
+    // 에이전트가 승인 대기에 들어가거나 턴을 마치면 CPU 가 떨어지고, 다시 일하면 오른다 —
+    // Orca 세션의 「바쁨↔한가함」이 바뀌면 8초 안에 한 번, 아니면 1분마다 부른다.
+    // 바쁨은 5% 이상, 한가함은 1% 미만, 그 사이는 직전 판정 유지 (3% 언저리에서 깜빡이며 계속 부르던 것을 막는다).
+    private var agentBusy: [String: Bool] = [:]
+    private var lastActivityPoll = Date.distantPast
+    private var activityPending = false
+
+    private func activityDue() -> Bool {
+        var busy: [String: Bool] = [:]
+        for session in sessions {
+            guard let pane = session.paneKey else { continue }
+            let previous = agentBusy[pane] ?? false
+            let now = session.agentCPU >= 0.05 ? true : session.agentCPU < 0.01 ? false : previous
+            busy[pane] = (busy[pane] ?? false) || now
+        }
+        guard !busy.isEmpty || !activities.isEmpty else { return false } // Orca 를 안 쓰면 부르지 않는다
+        if busy != agentBusy { activityPending = true }
+        agentBusy = busy
+        let elapsed = Date().timeIntervalSince(lastActivityPoll)
+        guard (activityPending && elapsed >= 8) || elapsed >= 60 else { return false }
+        activityPending = false
+        lastActivityPoll = Date()
+        return true
+    }
+
     private func refreshActivity() {
         DispatchQueue.global(qos: .utility).async {
             let activities = ActivityReader.read()
@@ -220,6 +249,36 @@ final class SystemMonitor: ObservableObject {
     func toggleNotifyWaiting() {
         notifyWaiting.toggle()
         UserDefaults.standard.set(notifyWaiting, forKey: Self.notifyWaitingKey)
+    }
+
+    // MARK: 포트 지도
+
+    private func refreshPorts() {
+        var owners: [pid_t: String] = [:]
+        for session in sessions {
+            owners[session.id] = session.project
+            for child in session.children { owners[child.pid] = session.project }
+        }
+        var found = PortScanner.scan(lastRecords, owners: owners)
+        for index in found.indices { found[index].branch = found[index].cwd.flatMap { branches[$0] } }
+        ports = found
+        let unknown = Set(found.compactMap(\.cwd)).subtracting(branches.keys)
+        guard !unknown.isEmpty else { return }
+        DispatchQueue.global(qos: .utility).async {
+            let resolved = unknown.map { cwd in
+                (cwd, CLI.run("/usr/bin/git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], timeout: 5)
+                    .flatMap { String(data: $0, encoding: .utf8) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+            }
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    for (cwd, branch) in resolved { self.branches[cwd] = branch }
+                    for index in self.ports.indices {
+                        self.ports[index].branch = self.ports[index].cwd.flatMap { self.branches[$0] }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: 업데이트

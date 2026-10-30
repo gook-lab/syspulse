@@ -21,6 +21,9 @@ build/SysPulse.app/Contents/MacOS/SysPulse --snapshot out.png [--tab agents|stra
 # 에이전트 줄 클릭과 같은 이동을 한 번 해 보기 (pid = claude·codex 프로세스)
 build/SysPulse.app/Contents/MacOS/SysPulse --jump <pid>
 
+# 스냅샷에 업데이트 배너 미리보기 · 워크트리 「목록 복사」 내용을 파일로
+build/SysPulse.app/Contents/MacOS/SysPulse --snapshot out.png --tab worktrees --preview-update --copy-worktrees list.md
+
 # 아이콘 다시 그리기
 swift scripts/make-icon.swift build/AppIcon.iconset && iconutil -c icns build/AppIcon.iconset -o Resources/AppIcon.icns
 ```
@@ -30,7 +33,9 @@ Dock 아이콘 없이 메뉴 막대에만 상주합니다(`LSUIElement`). 2초�
 ## 화면 구성 — 메뉴 막대 · 팝오버 · 고정 창
 
 - 메뉴 막대: 두 줄(위 CPU %, 아래 가용 GB). 경고 중에는 주황, 메모리 압박이 「위험」이면 빨강으로 바뀝니다.
-- 팝오버: CPU·메모리(가용 / 총량)·구독 사용량 아래에 탭 네 개(에이전트 · 세션 밖 · 앱 · 워크트리)를 둡니다. 탭 오른쪽에서 메모리순·CPU순을 바꿉니다.
+- 팝오버: CPU·메모리(가용 / 총량)·구독 사용량 아래에 탭 다섯 개(에이전트 · 세션 밖 · 앱 · 워크트리 · 포트)를 둡니다. 앞의 세 탭은 오른쪽에서 메모리순·CPU순을 바꿉니다.
+- 맨 아래 버전(`v1.12 · 커밋`)을 누르면 업데이트를 바로 확인합니다.
+- CPU · 메모리 · 구독 사용량 단락은 제목 줄을 눌러 접고 펼칩니다. 접어도 제목 줄의 핵심 값(CPU %, 가용 GB, 맨 위 에이전트 사용률)과 소진 예상 경고는 남고, 단락마다 상태를 기억합니다.
 - 고정 창: 팝오버 오른쪽 위 📌 로 항상 위에 뜨는 창으로 바꿉니다. 모든 Space 에 따라오고, 위치·고정 여부를 기억합니다. 폭에 맞춰 배치가 바뀝니다 — 좁으면(최소 240pt) 줄을 접고, 640pt 이상이면 왼쪽 시스템 · 오른쪽 목록 두 열이 됩니다.
 
 ## 수치 출처 — 활성 상태 보기 기준
@@ -57,13 +62,13 @@ Orca 의 터미널은 Orca 앱이 아니라 별도 데몬(`Orca Terminal Host`)�
 
 ## 입력 대기 표시 — Orca agentWait
 
-에이전트를 여러 개 돌리면 승인·질문에 멈춘 세션을 늦게 알아채는 데서 시간이 가장 많이 샙니다. Orca 가 판정한 상태(`orca worktree ps --agent-wait --json`)를 10초마다 읽어 세션 줄에 붙입니다. 에이전트 프로세스의 환경 변수 `ORCA_AGENT_PANE` 이 Orca 의 패인 키와 같아서 둘을 바로 잇습니다.
+에이전트를 여러 개 돌리면 승인·질문에 멈춘 세션을 늦게 알아채는 데서 시간이 가장 많이 샙니다. Orca 가 판정한 상태(`orca worktree ps --agent-wait --json`)를 읽어 세션 줄에 붙입니다. 에이전트 프로세스의 환경 변수 `ORCA_AGENT_PANE` 이 Orca 의 패인 키와 같아서 둘을 바로 잇습니다.
 
 - 손 아이콘(주황): 사람만 답할 수 있는 프롬프트에 멈춤(`agentWait`). 「선택 대기 3분째」처럼 이유와 경과 시간을 붙이고, 목록 맨 위로 올립니다.
 - 터미널(파랑): 작업 중 · 체크(초록): 턴을 마치고 다음 지시를 기다림 · 터미널(회색): Orca 밖 세션이라 상태를 모름
 - 메뉴 막대 숫자 왼쪽에 대기 수 배지, 탭 이름에 「대기 N」을 띄웁니다. 줄을 누르면 그 탭으로 갑니다.
 - 새로 대기에 들어간 세션마다 한 번 알림을 보냅니다(팝오버 아래 「대기 알림」으로 끄고 켭니다).
-- Orca CLI 호출은 한 번에 CPU 0.2초 정도라 10초 간격으로 둡니다.
+- Orca CLI 호출은 한 번에 CPU 0.2초 정도라 무작정 자주 부르지 않습니다. 에이전트가 대기에 들어가거나 턴을 마치면 CPU 가 떨어지고 다시 일하면 오르므로, Orca 세션의 바쁨(CPU 5% 이상)↔한가함(1% 미만)이 바뀌면 8초 안에 한 번, 그 밖에는 1분마다 부릅니다. 그 사이 값은 직전 판정을 유지해 깜빡임을 막습니다. Orca 세션이 없으면 부르지 않습니다.
 
 ## worktree 정리 — 잃을 게 없는 것만 git worktree remove
 
@@ -73,7 +78,25 @@ Orca 의 터미널은 Orca 앱이 아니라 별도 데몬(`Orca Terminal Host`)�
 - 줄마다 마지막 커밋 시점, 브랜치, 기본 브랜치에 들어갔는지, 변경 수, 원격에 없는 커밋 수, 그 안에서 도는 에이전트·dev 프로세스를 붙입니다. 남길 이유는 주황, 사용 중은 파랑입니다.
 - 「정리」는 변경 0 · 원격에 없는 커밋 0 · 안에서 도는 프로세스 없음 · 잠기지 않음일 때만 나오고, 두 번 눌러야 실행합니다. 실행은 `git worktree remove`(--force 없음)라 판정이 틀려도 변경이 있으면 git 이 거절합니다. 브랜치와 커밋은 그대로 남고, git 이 무시하는 파일(node_modules · .env.local 등)은 폴더와 함께 지워집니다.
 - 폴더가 이미 없는 worktree 는 `git worktree prune` 으로 기록만 지웁니다.
+- 마지막 커밋이 24시간 안이면 「최근 작업」으로 보고 정리 대상에서 뺍니다.
 - 크기(`du`)는 백그라운드에서 잽니다(41개에 30초 안팎). 켤 때와 30분마다, 탭을 열 때(2분 지났으면) 다시 봅니다.
+- 「목록 복사」는 경로·브랜치·크기·변경·푸시 안 한 커밋·사용 중·정리 가능을 Markdown 표로 클립보드에 넣습니다. Claude 에 붙여 「정리해도 되는 걸 골라 줘」처럼 검토를 맡길 수 있습니다.
+
+## 포트 지도 — LISTEN 소켓 · worktree · 브랜치
+
+「포트」 탭은 지금 TCP 포트를 열고 있는 dev 서버를 보여 줍니다. worktree 마다 vite 를 띄우다 보면 5173 이 어느 브랜치의 서버인지 헷갈리는 일이 잦아서 만들었습니다.
+
+- `lsof` 를 띄우지 않고 libproc(`PROC_PIDLISTFDS` → `PROC_PIDFDSOCKETINFO`)으로 앱 밖 프로세스의 LISTEN 소켓을 10초마다 읽습니다. 작업 폴더가 `/` 인 시스템·보안 데몬은 뺍니다.
+- 줄마다 프로세스 이름, 띄운 에이전트 세션(없으면 「세션 밖」 주황), worktree 이름과 브랜치를 붙입니다. 같은 포트를 둘 이상이 열고 있으면 포트 번호를 주황으로 표시합니다.
+- 줄을 누르면 `http://localhost:<포트>` 를 엽니다.
+
+## 업데이트 — 소스 폴더 git fetch
+
+`build.sh` 가 빌드할 때 Info.plist 에 버전(`1.<커밋 수>`), 커밋, 소스 폴더를 적어 둡니다. 앱은 켠 뒤 20초와 6시간마다 그 폴더에서 `git fetch` 해 설치된 커밋 뒤로 새 커밋이 있는지 봅니다.
+
+- 새 커밋이 있으면 팝오버 맨 위에 「업데이트가 있습니다 — 새 커밋 N개」 배너와 커밋 제목을 띄우고, 원격 커밋마다 한 번 알림을 보냅니다.
+- 「업데이트」를 누르면 그 폴더에서 `git pull --ff-only && ./build.sh install` 을 돌립니다. 스크립트가 지금 앱을 끄고 새 빌드를 띄웁니다. 실패하면 배너가 사라지고 푸터에 이유가 남으며, 전체 기록은 `~/Library/Logs/SysPulse-update.log` 에 있습니다.
+- 소스 폴더에 로컬 수정이 있어 fast-forward 가 안 되면 업데이트하지 않습니다.
 
 ## 세션 줄 클릭 — 창·탭으로 이동
 
@@ -83,11 +106,12 @@ Orca 의 터미널은 Orca 앱이 아니라 별도 데몬(`Orca Terminal Host`)�
 |---|---|---|
 | Orca | `ORCA_TERMINAL_HANDLE`, `ORCA_AGENT_PANE`, `ORCA_CLI_BIN_DIR` | `orca terminal switch` 로 그 탭을 앞으로 가져오고 Orca 를 띄웁니다. Orca 를 다시 켜서 핸들이 바뀌었으면 탭·패인 id 로 찾아 다시 시도합니다 |
 | VS Code · Cursor · Windsurf · Zed | `__CFBundleIdentifier` | 작업 폴더를 열어 그 폴더의 창으로 갑니다 |
-| Terminal · iTerm 등 그 밖 | `__CFBundleIdentifier` | 앱만 앞으로 옵니다. 탭 선택은 Apple 이벤트 권한이 필요해 넣지 않았습니다 |
+| Terminal · iTerm | `__CFBundleIdentifier` + 프로세스의 tty | AppleScript 로 그 tty 의 탭을 고르고 앞으로 가져옵니다. 처음 한 번 「자동화」 권한을 묻고, 거절하면 앱만 앞으로 옵니다 |
+| 그 밖 | `__CFBundleIdentifier` | 앱만 앞으로 옵니다 |
 
 ## 구독 사용량 — claude-hud 스냅샷 · Codex 세션 로그
 
-Orca 상태 줄처럼 5시간 세션 · 주간 한도를 `세션 ▬ 18% 2h 12m · 주간 ▬ 82% 3d 2h` 로 보여 줍니다. 토큰이나 비공개 API 를 쓰지 않고, 각 CLI 가 로컬에 남긴 값만 30초마다 읽습니다.
+Orca 상태 줄처럼 5시간 세션 · 주간 한도를 `세션 ▬ 18% 2h 12m · 주간 ▬ 82% 3d 2h` 로 보여 줍니다. 토큰이나 비공개 API 를 쓰지 않고, 각 CLI 가 로컬에 남긴 값만 1분마다 읽습니다.
 
 | 대상 | 출처 | 준비 |
 |---|---|---|

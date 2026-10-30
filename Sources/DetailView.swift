@@ -18,7 +18,7 @@ enum DetailMode {
 }
 
 enum ListTab: String {
-    case agents, strays, apps, worktrees
+    case agents, strays, apps, worktrees, ports
 }
 
 enum SortKey: String {
@@ -88,7 +88,7 @@ struct DetailView: View {
 
     @ViewBuilder
     private var listColumn: some View {
-        TabPicker(selection: tab, showsSort: tab != .worktrees, agentCount: monitor.sessions.count, waitingCount: monitor.waitingCount,
+        TabPicker(selection: tab, showsSort: tab != .worktrees && tab != .ports, portCount: monitor.ports.count, agentCount: monitor.sessions.count, waitingCount: monitor.waitingCount,
                   strayCount: monitor.strays.count, worktreeCount: monitor.worktrees.count,
                   sort: sort, onSelect: { storedTab = $0.rawValue },
                   onToggleSort: { storedSort = (sort == .memory ? SortKey.cpu : .memory).rawValue })
@@ -97,6 +97,7 @@ struct DetailView: View {
         case .strays: StraysSection(monitor: monitor, sort: sort)
         case .apps: AppsSection(monitor: monitor, sort: sort, previewConfirmFirst: previewConfirmFirstApp)
         case .worktrees: WorktreesSection(monitor: monitor)
+        case .ports: PortsSection(monitor: monitor, mode: mode)
         }
         Separator()
         SettingsRow(monitor: monitor)
@@ -193,8 +194,9 @@ private struct CPUSection: View {
     @ObservedObject var monitor: SystemMonitor
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        CollapsibleSection("cpu") { _ in
             SectionTitle(title: "CPU", value: Format.percent(monitor.cpu.total))
+        } content: {
             Sparkline(values: monitor.cpuHistory, capacity: SystemMonitor.historyLength, color: Palette.user)
                 .frame(height: 34)
             ViewThatFits(in: .horizontal) {
@@ -222,7 +224,7 @@ private struct MemorySection: View {
 
     var body: some View {
         if let memory = monitor.memory {
-            VStack(alignment: .leading, spacing: 8) {
+            CollapsibleSection("memory") { _ in
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         title(memory)
@@ -234,6 +236,7 @@ private struct MemorySection: View {
                         PressureBadge(pressure: memory.pressure)
                     }
                 }
+            } content: {
                 MemoryBar(memory: memory).frame(height: 12)
                 ViewThatFits(in: .horizontal) {
                     Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
@@ -299,23 +302,41 @@ private struct UsageSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("구독 사용량").font(.subheadline.weight(.semibold))
-            if usage.count > Self.visibleRows {
-                ScrollView(.vertical) { rows }.frame(height: 96)
-            } else {
-                rows
+            CollapsibleSection("usage", spacing: 6) { collapsed in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("구독 사용량").font(.subheadline.weight(.semibold))
+                    if collapsed, let summary {
+                        Text(summary).font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                    }
+                }
+            } content: {
+                if usage.count > Self.visibleRows {
+                    ScrollView(.vertical) { rows }.frame(height: 96)
+                } else {
+                    rows
+                }
+                if usage.isEmpty {
+                    Text("Orca 에 로그인하거나, Claude 는 claude-hud 설정 display.externalUsageWritePath 를 켜면 보입니다")
+                        .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+                }
             }
+            // 소진 예상은 접어 둬도 보인다
             if let soonest {
                 Text("\(soonest.agent) \(soonest.window.label): \(Format.dayHour(soonest.eta))쯤 소진 예상"
                      + (soonest.window.resetsAt.map { " (초기화 \(Format.dayHour($0)))" } ?? ""))
                     .help("지금까지의 사용 속도를 그대로 이어 갔을 때 한도 100% 에 닿는 시각")
                     .font(.caption2).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
             }
-            if usage.isEmpty {
-                Text("Orca 에 로그인하거나, Claude 는 claude-hud 설정 display.externalUsageWritePath 를 켜면 보입니다")
-                    .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
-            }
         }
+    }
+
+    // 접었을 때 머리 줄에 남길 값: 맨 위(가장 많이 쓴) 에이전트의 앞 두 창 — 「Claude 17% · 주간 82%」
+    private var summary: String? {
+        guard let top = usage.first, !top.windows.isEmpty else { return nil }
+        let windows = top.windows.prefix(2).map { w in
+            "\(w.label) \(w.isReset ? 0 : Int(w.usedPercent.rounded()))%"
+        }
+        return "\(top.name) " + windows.joined(separator: " · ")
     }
 
     // 초기화 전에 한도에 닿을 창 중 가장 이른 것
@@ -461,6 +482,7 @@ private struct QuotaBar: View {
 private struct TabPicker: View {
     let selection: ListTab
     let showsSort: Bool
+    let portCount: Int
     let agentCount: Int
     let waitingCount: Int
     let strayCount: Int
@@ -500,6 +522,7 @@ private struct TabPicker: View {
         tabButton(.strays, title: strayCount > 0 ? "세션 밖 \(strayCount)" : "세션 밖", compact: compact)
         tabButton(.apps, title: "앱", compact: compact)
         tabButton(.worktrees, title: worktreeCount > 0 ? "워크트리 \(worktreeCount)" : "워크트리", compact: compact)
+        tabButton(.ports, title: portCount > 0 ? "포트 \(portCount)" : "포트", compact: compact)
     }
 
     private func tabButton(_ tab: ListTab, title: String, compact: Bool) -> some View {
@@ -552,6 +575,62 @@ private struct AgentsSection: View {
         let cpu = monitor.sessions.reduce(0) { $0 + $1.cpu }
         return "에이전트 \(count)개 · 합계 \(Format.bytes(total)) · 평균 \(Format.bytes(total / UInt64(count)))"
             + " · CPU \(Format.cpu(cpu))"
+    }
+}
+
+// 지금 LISTEN 중인 포트 — 어느 worktree·브랜치의 어떤 서버인지. 줄을 누르면 http://localhost:포트 를 연다.
+private struct PortsSection: View {
+    @ObservedObject var monitor: SystemMonitor
+    let mode: DetailMode
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if monitor.ports.isEmpty {
+                Text("앱 밖 프로세스가 연 포트가 없습니다").font(.callout).foregroundStyle(.secondary)
+            } else {
+                ForEach(monitor.ports.prefix(14)) { port in
+                    PortRow(port: port, shared: monitor.ports.filter { $0.port == port.port }.count > 1, mode: mode)
+                }
+                if monitor.ports.count > 14 {
+                    Text("외 \(monitor.ports.count - 14)개").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Text("앱(.app) 밖에서 도는 node·python 등의 TCP LISTEN 포트입니다. 같은 포트를 둘 이상이 열고 있으면 주황으로 표시합니다.")
+                .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+private struct PortRow: View {
+    let port: ListeningPort
+    let shared: Bool // 같은 포트를 다른 프로세스도 열었다 (주소만 다르게) — 어느 쪽이 응답할지 헷갈린다
+    let mode: DetailMode
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            if let url = URL(string: "http://localhost:\(port.port)") { NSWorkspace.shared.open(url) }
+            if mode == .popover { WindowController.shared.closeMenuBarPopover() }
+        } label: {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(":" + String(port.port)).font(.callout.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(shared ? .orange : .primary).frame(minWidth: 52, alignment: .leading)
+                    Text(port.name).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 6)
+                    Text(port.owner.map { "에이전트 · \($0)" } ?? "세션 밖")
+                        .font(.caption).foregroundStyle(port.owner == nil ? .orange : .secondary).lineLimit(1)
+                }
+                .font(.callout)
+                Text([port.place, port.branch.flatMap { $0.isEmpty || $0 == "HEAD" ? nil : $0 }].compactMap { $0 }
+                        .joined(separator: " · "))
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    .padding(.leading, 58)
+            }
+        }
+        .buttonStyle(RowButtonStyle(hovering: hovering))
+        .onHover { hovering = $0 }
+        .help("http://localhost:\(port.port) 열기 · pid \(port.pid)" + (port.cwd.map { " · " + $0 } ?? ""))
     }
 }
 
@@ -1030,6 +1109,48 @@ private struct FooterView: View {
 }
 
 // MARK: - 작은 부품
+
+// 단락 접기 — 머리 줄(제목·핵심 값)은 남기고 아래만 숨긴다. 단락마다 상태를 기억한다(UserDefaults collapsed.<키>).
+// 스냅샷에서는 `-collapsed.cpu YES` 처럼 인자로 접은 상태를 줄 수 있다(NSArgumentDomain).
+private struct CollapsibleSection<Header: View, Content: View>: View {
+    let spacing: CGFloat
+    let header: (Bool) -> Header
+    let content: Content
+    @AppStorage private var collapsed: Bool
+
+    init(_ key: String, spacing: CGFloat = 8, @ViewBuilder header: @escaping (Bool) -> Header,
+         @ViewBuilder content: () -> Content) {
+        self.spacing = spacing
+        self.header = header
+        self.content = content()
+        _collapsed = AppStorage(wrappedValue: false, "collapsed." + key)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: spacing) {
+            Button { collapsed.toggle() } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(collapsed ? 0 : 90))
+                        .frame(width: 10)
+                    header(collapsed)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(HeaderButtonStyle())
+            .help(collapsed ? "펼치기" : "접기")
+            if !collapsed { content }
+        }
+    }
+}
+
+private struct HeaderButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.opacity(configuration.isPressed ? 0.6 : 1)
+    }
+}
 
 private struct SectionTitle: View {
     let title: String

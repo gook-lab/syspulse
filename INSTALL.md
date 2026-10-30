@@ -4,7 +4,7 @@ Claude Code·Codex 같은 에이전트에게 이 문서 링크를 주고 아래�
 
 > https://github.com/gook-lab/syspulse/blob/main/INSTALL.md 보고 SysPulse 설치해줘
 
-에이전트가 소스를 받아 이 맥에서 직접 빌드한 뒤 `~/Applications` 에 넣고 실행합니다. 직접 빌드한 앱이라 Gatekeeper 경고가 뜨지 않고, 관리자 권한도 필요 없습니다. 빌드는 15초 안팎, 전체는 1분 정도 걸립니다. 업데이트도 같은 방식으로 "SysPulse 업데이트해줘"라고 하면 됩니다.
+에이전트가 소스를 받아 이 맥에서 직접 빌드한 뒤 `~/Applications` 에 넣고 실행합니다. 직접 빌드한 앱이라 Gatekeeper 경고가 뜨지 않고, 관리자 권한도 필요 없습니다. 빌드는 15초 안팎, 전체는 1분 정도 걸립니다. 새 버전이 올라오면 앱이 팝오버 맨 위 배너와 알림으로 알려 주고, 「업데이트」 한 번이면 다시 빌드해 설치합니다. 에이전트에게 "SysPulse 업데이트해줘"라고 해도 됩니다.
 
 ## 설치 뒤 사람이 할 일 — 메뉴 막대 확인 · 로그인 시 실행
 
@@ -102,4 +102,5 @@ defaults delete lab.gook.syspulse
 | `xcrun: error: invalid active developer path` | Command Line Tools 없음 | 1단계의 `xcode-select --install` |
 | 구독 사용량 칸이 비어 있음 | Orca 없음, claude-hud 설정 없음 | 5단계 |
 | 경고 알림이 「스크립트 편집기」 이름으로 옴 | ad-hoc 서명 빌드는 알림 센터 권한이 거절되어 `osascript` 로 대신 띄움 | 정상 동작. 아예 안 오면 시스템 설정 → 알림 → 스크립트 편집기 켜기 |
-| 세션 줄을 눌러도 탭이 안 바뀜 | Orca 밖 터미널(Terminal·iTerm)에서 띄운 세션 | 앱만 앞으로 옴. 탭 선택은 지원하지 않음 |
+| Terminal·iTerm 세션 줄을 눌러도 탭이 안 바뀜 | 「자동화」 권한 거절 | 시스템 설정 → 개인정보 보호 및 보안 → 자동화 → SysPulse 에서 Terminal·iTerm 켜기 |
+| 업데이트를 눌렀는데 그대로임 | 소스 폴더에 로컬 수정이 있어 `git pull --ff-only` 실패 | 푸터의 실패 이유와 `~/Library/Logs/SysPulse-update.log` 확인 |
