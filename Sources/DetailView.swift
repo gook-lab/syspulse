@@ -84,7 +84,11 @@ struct DetailView: View {
     @ViewBuilder
     private var systemColumn: some View {
         HeaderView(monitor: monitor, mode: mode)
-        if monitor.update != nil || monitor.updating { UpdateBanner(monitor: monitor) }
+        if monitor.update != nil || monitor.updating {
+            UpdateBanner(monitor: monitor)
+        } else if let message = monitor.updateMessage {
+            Text(message).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        }
         if !monitor.alerts.isEmpty { AlertBanner(monitor: monitor, mode: mode) }
         Separator()
         CPUSection(monitor: monitor)
@@ -138,12 +142,45 @@ private struct HeaderView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
+            UpdateChip(monitor: monitor)
             Button { WindowController.shared.togglePinned() } label: {
                 Image(systemName: mode == .pinned ? "pin.fill" : "pin")
             }
             .buttonStyle(IconButtonStyle(active: mode == .pinned))
             .help(mode == .pinned ? "고정 해제" : "화면에 고정 — 항상 위에 뜨는 창으로")
         }
+    }
+}
+
+// 머리 줄 오른쪽에 늘 보이는 버전 · 업데이트 상태. 새 커밋이 있으면 「업데이트 N」(누르면 설치), 아니면 「v1.13 ✓」(누르면 다시 확인)
+private struct UpdateChip: View {
+    @ObservedObject var monitor: SystemMonitor
+
+    var body: some View {
+        if monitor.updating {
+            HStack(spacing: 5) { Spinner().frame(width: 10, height: 10); Text("업데이트 중") }
+                .font(.caption.weight(.medium)).foregroundStyle(Palette.user).fixedSize()
+        } else if let update = monitor.update {
+            Button { monitor.installUpdate() } label: {
+                Label("업데이트 \(update.behind)", systemImage: "arrow.down.circle.fill")
+            }
+            .buttonStyle(PillButtonStyle(tint: Palette.user))
+            .help("새 커밋 \(update.behind)개 — 누르면 받아서 다시 빌드하고 앱을 다시 켭니다")
+        } else {
+            Button { monitor.checkUpdate(manual: true) } label: {
+                HStack(spacing: 4) {
+                    if monitor.checkingUpdate { Spinner().frame(width: 10, height: 10) }
+                    Text("v\(Updater.version)" + (monitor.updateMessage != nil ? " ⚠︎" : monitor.checkingUpdate ? "" : " ✓"))
+                }
+            }
+            .buttonStyle(PillButtonStyle(tint: monitor.updateMessage != nil ? .red : nil))
+            .help(help)
+        }
+    }
+
+    private var help: String {
+        let checked = monitor.lastUpdateCheck.map { "마지막 확인 " + Format.clock($0) } ?? "아직 확인 전"
+        return "v\(Updater.version) · \(Updater.shortCommit) — \(checked). 누르면 다시 확인"
     }
 }
 
@@ -1131,12 +1168,6 @@ private struct SettingsRow: View {
 private struct FooterView: View {
     @ObservedObject var monitor: SystemMonitor
 
-    // 다시 설치해야 하는 상태나 실패는 빨갛게
-    private var updateProblem: Bool {
-        guard let message = monitor.updateMessage else { return false }
-        return message.hasPrefix("업데이트 실패") || message.contains(Updater.reinstallHint) || message.hasPrefix("git fetch 실패")
-    }
-
     var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
@@ -1158,13 +1189,6 @@ private struct FooterView: View {
                 Text("부팅 후 \(Format.uptime(since: boot))")
             }
             Text("열 상태 \(Format.thermal(ProcessInfo.processInfo.thermalState))")
-            // 버전을 누르면 바로 업데이트 확인
-            Button { monitor.checkUpdate(manual: true) } label: {
-                Text("v\(Updater.version) · \(Updater.shortCommit)" + (monitor.updateMessage.map { " — " + $0 } ?? ""))
-                    .foregroundStyle(updateProblem ? .red : .secondary)
-            }
-            .buttonStyle(.plain)
-            .help("눌러서 업데이트 확인")
         }
         .font(.caption).foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)

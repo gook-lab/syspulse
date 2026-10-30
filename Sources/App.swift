@@ -45,6 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if UserDefaults.standard.bool(forKey: WindowController.pinnedKey) {
             WindowController.shared.showPinned()
         }
+        // 팝오버가 열릴 때(메뉴 막대 창이 키 창이 될 때) 업데이트가 오래됐으면 다시 확인
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { note in
+            guard let window = note.object as? NSWindow, window.className.contains("MenuBarExtra") else { return }
+            MainActor.assumeIsolated { SystemMonitor.shared.checkUpdateIfStale() }
+        }
         // 메뉴 막대 항목이 자리를 잡은 뒤에 노치에 가렸는지 본다
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             MainActor.assumeIsolated { WindowController.shared.checkMenuBarVisibility() }

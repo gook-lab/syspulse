@@ -66,7 +66,8 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var update: UpdateInfo?
     @Published private(set) var updating = false
     @Published private(set) var updateMessage: String? // 확인 결과·실패 이유
-    private var checkingUpdate = false
+    @Published private(set) var checkingUpdate = false
+    @Published private(set) var lastUpdateCheck: Date?
     private var lastRecords: [ProcessRecord] = []
     private var paneKeys: [String: String] = [:] // 세션 키 → 패인 키 ("" = Orca 밖) // 키: 앱 줄 id 또는 "stray:<pid>"
 
@@ -127,7 +128,7 @@ final class SystemMonitor: ObservableObject {
         if notifies, activityDue() { refreshActivity() }
         if samples % 5 == 0 { refreshPorts() } // 포트는 10초마다 (libproc 만 써서 가볍다)
         if samples == 3 || samples % 900 == 0, notifies { refreshWorktrees() } // worktree 는 켤 때와 30분마다
-        if samples == 10 || samples % 10_800 == 0, notifies { checkUpdate() } // 업데이트는 켠 뒤 20초, 그다음 6시간마다
+        if samples == 10 || samples % 900 == 0, notifies { checkUpdate() } // 업데이트는 켠 뒤 20초, 그다음 30분마다 (팝오버를 열 때도)
         samples += 1
         evaluateAlerts()
     }
@@ -301,10 +302,15 @@ final class SystemMonitor: ObservableObject {
 
     // MARK: 업데이트
 
+    // 팝오버를 열 때 — 마지막 확인이 10분 넘었으면 다시 본다
+    func checkUpdateIfStale() {
+        guard notifies, lastUpdateCheck.map({ Date().timeIntervalSince($0) >= 600 }) ?? true else { return }
+        checkUpdate()
+    }
+
     func checkUpdate(manual: Bool = false) {
         guard !checkingUpdate, !updating else { return }
         checkingUpdate = true
-        if manual { updateMessage = "업데이트 확인 중…" }
         DispatchQueue.global(qos: .utility).async {
             let found = Updater.check()
             DispatchQueue.main.async { [weak self] in
@@ -316,11 +322,12 @@ final class SystemMonitor: ObservableObject {
     // 같은 원격 커밋으로는 한 번만 알린다. 소스 폴더가 없는 것처럼 다시 설치해야 하는 실패는 자동 확인 때도 푸터에 남긴다.
     private func applyUpdateCheck(_ result: UpdateCheck, manual: Bool) {
         checkingUpdate = false
+        lastUpdateCheck = Date()
         let found: UpdateInfo?
         switch result {
         case .upToDate:
             found = nil
-            if manual || updateMessage?.hasPrefix("업데이트 실패") != true { updateMessage = manual ? "최신입니다" : nil }
+            updateMessage = nil
         case .available(let info):
             found = info
             updateMessage = nil
@@ -821,6 +828,14 @@ enum Format {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "ko_KR")
         formatter.dateFormat = "M/d(E) a h시"
+        return formatter.string(from: date)
+    }
+
+    // 「오후 3:42」
+    static func clock(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ko_KR")
+        formatter.dateFormat = "a h:mm"
         return formatter.string(from: date)
     }
 

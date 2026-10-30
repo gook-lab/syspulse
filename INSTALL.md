@@ -103,4 +103,4 @@ defaults delete lab.gook.syspulse
 | 구독 사용량 칸이 비어 있음 | Orca 없음, claude-hud 설정 없음 | 5단계 |
 | 경고 알림이 「스크립트 편집기」 이름으로 옴 | ad-hoc 서명 빌드는 알림 센터 권한이 거절되어 `osascript` 로 대신 띄움 | 정상 동작. 아예 안 오면 시스템 설정 → 알림 → 스크립트 편집기 켜기 |
 | Terminal·iTerm 세션 줄을 눌러도 탭이 안 바뀜 | 「자동화」 권한 거절 | 시스템 설정 → 개인정보 보호 및 보안 → 자동화 → SysPulse 에서 Terminal·iTerm 켜기 |
-| 업데이트를 눌렀는데 그대로임 | 소스 폴더에 로컬 수정이 있어 `git pull --ff-only` 실패 | 푸터의 실패 이유와 `~/Library/Logs/SysPulse-update.log` 확인 |
+| 업데이트를 눌렀는데 그대로임 | 소스 폴더에 로컬 수정이 있어 `git pull --ff-only` 실패 | 머리 줄 아래 빨간 실패 이유와 `~/Library/Logs/SysPulse-update.log` 확인 |
