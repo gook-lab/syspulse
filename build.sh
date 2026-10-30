@@ -35,7 +35,8 @@ fi
 echo "built $APP ($(lipo -archs "$APP/Contents/MacOS/SysPulse"))"
 
 if [[ "${1:-}" == "install" ]]; then
-  pkill -x SysPulse 2>/dev/null || true
+  # -a: 앱의 「업데이트」가 이 스크립트를 띄우면 앱이 조상 프로세스라, 기본 pkill 은 앱을 건너뛴다
+  pkill -a -x SysPulse 2>/dev/null || true
   mkdir -p ~/Applications
   rm -rf ~/Applications/SysPulse.app
   cp -R "$APP" ~/Applications/

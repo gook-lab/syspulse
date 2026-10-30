@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 // 업데이트 확인 — 빌드할 때 Info.plist 에 적어 둔 소스 폴더에서 git fetch 하고, 설치된 커밋 뒤로 새 커밋이 있는지 본다.
 // 업데이트는 그 폴더에서 `git pull --ff-only && ./build.sh install` — 스크립트가 지금 앱을 끄고 새 빌드를 띄운다.
@@ -45,7 +45,8 @@ enum Updater {
         return .available(UpdateInfo(behind: behind, subjects: subjects, remoteHead: head))
     }
 
-    // 성공하면 build.sh 가 이 앱을 끄므로 completion 은 실패했을 때만 불린다 (로그 마지막 줄을 넘긴다)
+    // 성공하면 build.sh 가 이 앱을 끈다. 그래도 살아 있으면(옛 build.sh 는 pkill 이 앱을 건너뛰었다) 새 앱을 띄울 셸을
+    // 남기고 스스로 끝낸다. completion 은 실패했을 때만 불린다 (로그 마지막 줄을 넘긴다)
     static func install(completion: @escaping @Sendable (String) -> Void) {
         guard let dir = sourceDir else { return completion("업데이트 실패 — 개발 빌드라 소스 폴더를 모릅니다") }
         guard FileManager.default.fileExists(atPath: dir + "/.git") else {
@@ -59,11 +60,21 @@ enum Updater {
             >> '\(logPath)' 2>&1
             """]
         process.terminationHandler = { finished in
+            if finished.terminationStatus == 0 { return relaunch() }
             let tail = (try? String(contentsOfFile: logPath, encoding: .utf8))?
                 .split(separator: "\n").suffix(2).joined(separator: " ") ?? ""
             completion("업데이트 실패 (종료 코드 \(finished.terminationStatus)) — \(tail) · 로그 ~/Library/Logs/SysPulse-update.log")
         }
         do { try process.run() } catch { completion("업데이트 실패 — 시작하지 못했습니다: \(error.localizedDescription)") }
+    }
+
+    private static func relaunch() {
+        let app = NSHomeDirectory() + "/Applications/SysPulse.app"
+        let opener = Process()
+        opener.executableURL = URL(fileURLWithPath: "/bin/bash")
+        opener.arguments = ["-c", "sleep 1; open '\(app)'"]
+        try? opener.run()
+        DispatchQueue.main.async { NSApplication.shared.terminate(nil) }
     }
 
     private static func text(_ dir: String, _ arguments: [String]) -> String? {
