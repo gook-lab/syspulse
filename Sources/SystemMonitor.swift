@@ -100,7 +100,7 @@ final class SystemMonitor: ObservableObject {
         applyTrends(&analysis.sessions)
         (sessions, strays) = analysis
         loadAverage = Metrics.loadAverage()
-        if samples % 15 == 0 { usage = UsageReader.read() } // 사용량은 30초마다 (파일 몇 개만 읽는다)
+        if samples % 15 == 0, notifies { refreshUsage() } // 사용량은 30초마다, Orca CLI 를 부르니 백그라운드에서
         samples += 1
         evaluateAlerts()
     }
@@ -196,15 +196,37 @@ final class SystemMonitor: ObservableObject {
         if let heaviest = sessions.first {
             body += "\n가장 큰 에이전트: \(heaviest.project) \(Format.bytes(heaviest.total))"
         }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            guard granted else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { Self.post(body) }
+    }
+
+    // 알림 센터 권한은 Apple 개발자 서명이 없는 빌드(ad-hoc)에서 거절될 수 있다 (UNErrorDomain 1,
+    // 권한 창도 안 뜬다). 그때는 osascript 로 띄운다 — 알림이 「스크립트 편집기」 이름으로 온다.
+    nonisolated private static func post(_ body: String) {
+        let title = "SysPulse — 메모리 여유 부족"
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+            FileHandle.standardError.write(Data(
+                "[syspulse:notify] granted=\(granted) error=\(error.map { String(describing: $0) } ?? "-")\n".utf8))
+            guard granted else {
+                if error != nil { postWithScript(title: title, body: body) }
+                return
+            }
             let content = UNMutableNotificationContent()
-            content.title = "SysPulse — 메모리 여유 부족"
+            content.title = title
             content.body = body
             content.sound = .default
             UNUserNotificationCenter.current()
                 .add(UNNotificationRequest(identifier: "syspulse.alert", content: content, trigger: nil))
         }
+    }
+
+    nonisolated private static func postWithScript(title: String, body: String) {
+        func quoted(_ text: String) -> String {
+            "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", "display notification \(quoted(body)) with title \(quoted(title)) sound name \"default\""]
+        try? process.run()
     }
 
     private func updateSwapRate(_ bytes: UInt64) {
@@ -250,6 +272,20 @@ final class SystemMonitor: ObservableObject {
                 self.poll(key, members: members, token: token)
             }
         }
+    }
+
+    private func refreshUsage() {
+        DispatchQueue.global(qos: .utility).async {
+            let usage = UsageReader.read()
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.usage = usage }
+            }
+        }
+    }
+
+    // 스냅샷 전용: 메인 스레드가 잠들어 있어 백그라운드 결과를 못 받으니 바로 읽는다
+    func readUsageNow() {
+        usage = UsageReader.read()
     }
 
     // 스냅샷 전용: 종료 중 줄 모양 확인

@@ -208,6 +208,7 @@ enum Snapshot {
             Thread.sleep(forTimeInterval: duration == nil ? 0.4 : 2)
             monitor.sample()
         }
+        monitor.readUsageNow()
         if quittingFirst {
             // 끌 수 있는 첫 두 줄: 하나는 종료 중, 하나는 응답 없음
             for (index, row) in monitor.apps.filter(\.killable).prefix(2).enumerated() {

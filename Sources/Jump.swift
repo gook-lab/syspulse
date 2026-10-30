@@ -51,19 +51,10 @@ enum SessionJump {
         _ = run(cli, ["terminal", "switch", "--terminal", fresh, "--json"])
     }
 
-    // 성공(종료 코드 0)이면 표준 출력, 아니면 nil
     private static func run(_ path: String, _ arguments: [String]) -> Data? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return nil }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        FileHandle.standardError.write(Data("[syspulse:jump] \(arguments.prefix(2).joined(separator: " ")) exit=\(process.terminationStatus)\n".utf8))
-        return process.terminationStatus == 0 ? data : nil
+        let data = CLI.run(path, arguments)
+        FileHandle.standardError.write(Data("[syspulse:jump] \(arguments.prefix(2).joined(separator: " ")) ok=\(data != nil)\n".utf8))
+        return data
     }
 
     private static func appURL(_ bundle: String) -> URL? {

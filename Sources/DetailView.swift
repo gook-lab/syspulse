@@ -251,34 +251,52 @@ private struct MemorySection: View {
 // MARK: - 구독 사용량
 
 // Orca 상태 줄과 같은 꼴: 「Claude ▬ 17% 2h 20m · 주간 ▬ 82% 3d 2h」. 색은 claude-hud 의 페이스 기준.
+// 세션을 많이 쓴 에이전트가 위(UsageReader 가 정렬), 3개를 넘으면 그 안에서 스크롤.
 private struct UsageSection: View {
+    static let visibleRows = 3
     let usage: [AgentUsage]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("구독 사용량").font(.subheadline.weight(.semibold))
-            ForEach(usage) { agent in UsageRow(agent: agent) }
-            if !usage.contains(where: { $0.id == "claude" }) {
-                Text("Claude 는 claude-hud 설정 display.externalUsageWritePath 를 켜면 보입니다")
+            if usage.count > Self.visibleRows {
+                ScrollView(.vertical) { rows }.frame(height: 96)
+            } else {
+                rows
+            }
+            if usage.isEmpty {
+                Text("Orca 에 로그인하거나, Claude 는 claude-hud 설정 display.externalUsageWritePath 를 켜면 보입니다")
                     .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
+
+    private var rows: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(usage) { agent in UsageRow(agent: agent) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 }
 
+// 앞의 두 창(세션·주간 등)은 막대·남은 시간까지, 그 뒤(Fable 주간 등)는 「Fable 0%」로 짧게
 private struct UsageRow: View {
     let agent: AgentUsage
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) { name; windows; Spacer(minLength: 0); stale }
-            // 오래된 값 표시가 안 들어가면 줄을 흐리게 하고 툴팁으로 알린다
-            HStack(spacing: 8) { name; windows }
+            HStack(spacing: 8) { name; windows(extras: true); Spacer(minLength: 0); stale }
+            HStack(spacing: 8) { name; windows(extras: true) }
                 .opacity(staleText == nil ? 1 : 0.55)
                 .help(staleText ?? "")
+            // 짧은 창까지 안 들어가면 툴팁으로
+            HStack(spacing: 8) { name; windows(extras: false) }
+                .opacity(staleText == nil ? 1 : 0.55)
+                .help(([staleText] + agent.windows.dropFirst(2).map { Optional("\($0.label) \(Int($0.usedPercent.rounded()))%") })
+                    .compactMap { $0 }.joined(separator: " · "))
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) { name; stale }
-                windows
+                windows(extras: true)
             }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) { name; stale }
@@ -292,11 +310,11 @@ private struct UsageRow: View {
         Text(agent.name).fontWeight(.medium).frame(minWidth: 44, alignment: .leading).fixedSize()
     }
 
-    private var windows: some View {
+    private func windows(extras: Bool) -> some View {
         HStack(spacing: 6) {
-            ForEach(Array(agent.windows.enumerated()), id: \.element.id) { index, window in
+            ForEach(Array(agent.windows.prefix(extras ? agent.windows.count : 2).enumerated()), id: \.element.id) { index, window in
                 if index > 0 { Text("·").foregroundStyle(.tertiary) }
-                UsageWindowView(window: window)
+                UsageWindowView(window: window, compact: index >= 2)
             }
         }
         .fixedSize()
@@ -318,14 +336,19 @@ private struct UsageRow: View {
 
 private struct UsageWindowView: View {
     let window: UsageWindow
+    var compact = false
 
     var body: some View {
         HStack(spacing: 4) {
             Text(window.label).foregroundStyle(.secondary)
-            QuotaBar(percent: window.isReset ? 0 : window.usedPercent, color: color).frame(width: 28, height: 5)
+            if !compact {
+                QuotaBar(percent: window.isReset ? 0 : window.usedPercent, color: color).frame(width: 28, height: 5)
+            }
             Text("\(Int(window.usedPercent.rounded()))%").monospacedDigit()
                 .foregroundStyle(window.isReset ? Color.secondary : color == Palette.user ? Color.primary : color)
-            Text(resetText).monospacedDigit().foregroundStyle(.secondary)
+            if !compact {
+                Text(resetText).monospacedDigit().foregroundStyle(.secondary)
+            }
         }
         .fixedSize()
         .help(help)

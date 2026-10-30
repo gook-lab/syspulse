@@ -1,11 +1,13 @@
-import Foundation
+import AppKit
 
-// 에이전트 구독 사용량(5시간 세션 · 주간). 토큰이나 비공개 API 없이, 각 CLI 가 로컬에 남긴 값만 읽는다.
+// 에이전트 구독 사용량(5시간 세션 · 주간 · 월간). 토큰을 직접 다루지 않는다.
+// 1순위 Orca: `orca account list --json` 의 rateLimits — Orca 상태 줄과 같은 값 (Claude·Codex·Cursor 와
+//   Gemini·Kimi·Grok 등 Orca 에 로그인한 에이전트 전부). Orca 가 없거나 빠진 에이전트는 아래 로컬 파일로 채운다.
 // - Claude: Claude Code 가 상태 줄(statusline)에 넘기는 rate_limits 를 claude-hud 가 파일로 저장한 것
 //   (claude-hud 설정 display.externalUsageWritePath). 경로는 defaults 의 claudeUsagePath 로 바꿀 수 있다.
 // - Codex: 세션 로그(rollout-*.jsonl)의 마지막 rate_limits 이벤트. ~/.codex 와 Orca 가 쓰는 Codex 홈을 함께 본다.
 
-struct UsageWindow: Identifiable {
+struct UsageWindow: Identifiable, Sendable {
     enum Pace { case normal, warning, critical }
 
     let id: String
@@ -28,18 +30,80 @@ struct UsageWindow: Identifiable {
     }
 }
 
-struct AgentUsage: Identifiable {
+struct AgentUsage: Identifiable, Sendable {
     let id: String
     let name: String
     let windows: [UsageWindow]
     let reportedAt: Date?
+
+    // 정렬 기준: 5시간 세션 사용률, 세션 창이 없으면(Cursor 등) 가장 높은 창
+    var rank: Double {
+        windows.first { $0.id == "session" || $0.id == "five_hour" || $0.id == "primary" }?.usedPercent
+            ?? windows.map(\.usedPercent).max() ?? 0
+    }
 }
 
 enum UsageReader {
     static let defaultClaudePath = "~/.claude/plugins/claude-hud/usage-snapshot.json"
 
+    // 세션을 많이 쓴 에이전트가 위로
     static func read() -> [AgentUsage] {
-        [claude(), codex()].compactMap { $0 }
+        var agents = orca()
+        for local in [claude(), codex()].compactMap({ $0 }) where !agents.contains(where: { $0.id == local.id }) {
+            agents.append(local)
+        }
+        return agents.sorted { $0.rank > $1.rank }
+    }
+
+    // MARK: Orca
+
+    private static let orcaCLI: String? = {
+        let bundled = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.stablyai.orca")?
+            .appendingPathComponent("Contents/Resources/bin/orca").path
+        return bundled.flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil }
+    }()
+
+    private static let providerNames = [
+        "claude": "Claude", "codex": "Codex", "cursor": "Cursor", "gemini": "Gemini", "kimi": "Kimi",
+        "grok": "Grok", "minimax": "MiniMax", "antigravity": "Antigravity", "zcode": "ZCode", "opencodeGo": "OpenCode Go",
+    ]
+
+    static func orca() -> [AgentUsage] {
+        guard let cli = orcaCLI, let data = CLI.run(cli, ["account", "list", "--json"], timeout: 4),
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let result = json["result"] as? [String: Any],
+              let limits = result["rateLimits"] as? [String: Any] else { return [] }
+        return limits.compactMap { key, value -> AgentUsage? in
+            guard let provider = value as? [String: Any], provider["status"] as? String == "ok" else { return nil }
+            let windows = orcaWindows(provider)
+            guard !windows.isEmpty else { return nil }
+            return AgentUsage(id: key, name: providerNames[key] ?? key.capitalized, windows: windows,
+                              reportedAt: (provider["updatedAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) })
+        }
+    }
+
+    // session · weekly · (모델별) xxxWeekly · monthly 순. buckets(Cursor 의 모델 묶음)가 있으면 monthly 대신 쓴다.
+    private static func orcaWindows(_ provider: [String: Any]) -> [UsageWindow] {
+        func window(_ id: String, _ label: String, _ raw: Any?) -> UsageWindow? {
+            guard let raw = raw as? [String: Any], let used = (raw["usedPercent"] as? NSNumber)?.doubleValue else { return nil }
+            let minutes = (raw["windowMinutes"] as? NSNumber)?.doubleValue ?? 0
+            let reset = (raw["resetsAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
+            return UsageWindow(id: id, label: label, usedPercent: used, resetsAt: reset, length: minutes * 60)
+        }
+        var windows = [window("session", "세션", provider["session"]), window("weekly", "주간", provider["weekly"])]
+        for key in provider.keys.sorted() where key.hasSuffix("Weekly") {
+            windows.append(window(key, String(key.dropLast(6)).capitalized, provider[key]))
+        }
+        if let buckets = provider["buckets"] as? [[String: Any]], !buckets.isEmpty {
+            for bucket in buckets {
+                let name = bucket["name"] as? String ?? "?"
+                let label = name == "Cursor Models" ? "자체 모델" : name == "Other Models" ? "기타 모델" : name
+                windows.append(window("bucket:" + name, label, bucket))
+            }
+        } else {
+            windows.append(window("monthly", "월간", provider["monthly"]))
+        }
+        return windows.compactMap { $0 }
     }
 
     // MARK: Claude
@@ -147,5 +211,33 @@ enum UsageReader {
         if let date = formatter.date(from: text) { return date }
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: text)
+    }
+}
+
+// 짧은 CLI 호출. 끝나지 않으면 timeout 초 뒤 끊는다. 성공(종료 코드 0)이면 표준 출력, 아니면 nil.
+enum CLI {
+    static func run(_ path: String, _ arguments: [String], timeout: TimeInterval = 5) -> Data? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        let done = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in done.signal() }
+        guard (try? process.run()) != nil else { return nil }
+        var data = Data()
+        let reader = DispatchQueue.global(qos: .utility)
+        let finishedReading = DispatchSemaphore(value: 0)
+        reader.async {
+            data = output.fileHandleForReading.readDataToEndOfFile()
+            finishedReading.signal()
+        }
+        if done.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            return nil
+        }
+        _ = finishedReading.wait(timeout: .now() + 1)
+        return process.terminationStatus == 0 ? data : nil
     }
 }
