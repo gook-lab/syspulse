@@ -19,6 +19,8 @@ for arch in $ARCHS; do
 done
 lipo -create "${slices[@]}" -output "$APP/Contents/MacOS/SysPulse"
 cp Info.plist "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/" # 다시 그리려면 scripts/make-icon.swift
 codesign --force --sign - "$APP" >/dev/null
 echo "built $APP ($(lipo -archs "$APP/Contents/MacOS/SysPulse"))"
 
