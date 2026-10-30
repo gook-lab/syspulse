@@ -18,6 +18,7 @@ struct AgentSession: Identifiable {
     var detachedCount = 0
     var trend: Int64? // 에이전트 프로세스 자체의 메모리 증감 (최근 최대 10분) — SystemMonitor 가 채운다
     var trendMinutes = 0
+    var paneKey: String? // Orca 패인 키 (ORCA_AGENT_PANE) — SystemMonitor 가 채운다
 
     var key: String { "\(id):\(start)" }
     var total: UInt64 { children.reduce(agentFootprint) { $0 + $1.footprint } }

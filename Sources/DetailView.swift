@@ -87,7 +87,8 @@ struct DetailView: View {
 
     @ViewBuilder
     private var listColumn: some View {
-        TabPicker(selection: tab, agentCount: monitor.sessions.count, strayCount: monitor.strays.count,
+        TabPicker(selection: tab, agentCount: monitor.sessions.count, waitingCount: monitor.waitingCount,
+                  strayCount: monitor.strays.count,
                   sort: sort, onSelect: { storedTab = $0.rawValue },
                   onToggleSort: { storedSort = (sort == .memory ? SortKey.cpu : .memory).rawValue })
         switch tab {
@@ -264,11 +265,23 @@ private struct UsageSection: View {
             } else {
                 rows
             }
+            if let soonest {
+                Text("\(soonest.agent) \(soonest.window.label): \(Format.dayHour(soonest.eta))쯤 소진 예상"
+                     + (soonest.window.resetsAt.map { " (초기화 \(Format.dayHour($0)))" } ?? ""))
+                    .help("지금까지의 사용 속도를 그대로 이어 갔을 때 한도 100% 에 닿는 시각")
+                    .font(.caption2).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            }
             if usage.isEmpty {
                 Text("Orca 에 로그인하거나, Claude 는 claude-hud 설정 display.externalUsageWritePath 를 켜면 보입니다")
                     .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    // 초기화 전에 한도에 닿을 창 중 가장 이른 것
+    private var soonest: (agent: String, window: UsageWindow, eta: Date)? {
+        usage.flatMap { agent in agent.windows.compactMap { w in w.projectedExhaustion.map { (agent.name, w, $0) } } }
+            .min { $0.2 < $1.2 }
     }
 
     private var rows: some View {
@@ -408,6 +421,7 @@ private struct QuotaBar: View {
 private struct TabPicker: View {
     let selection: ListTab
     let agentCount: Int
+    let waitingCount: Int
     let strayCount: Int
     let sort: SortKey
     let onSelect: (ListTab) -> Void
@@ -434,7 +448,8 @@ private struct TabPicker: View {
 
     @ViewBuilder
     private func buttons(compact: Bool) -> some View {
-        tabButton(.agents, title: agentCount > 0 ? "에이전트 \(agentCount)" : "에이전트", compact: compact)
+        tabButton(.agents, title: (agentCount > 0 ? "에이전트 \(agentCount)" : "에이전트")
+                  + (waitingCount > 0 ? " · 대기 \(waitingCount)" : ""), compact: compact)
         tabButton(.strays, title: strayCount > 0 ? "세션 밖 \(strayCount)" : "세션 밖", compact: compact)
         tabButton(.apps, title: "앱", compact: compact)
     }
@@ -450,9 +465,15 @@ private struct AgentsSection: View {
     let sort: SortKey
     let mode: DetailMode
 
-    // 기본은 메모리순(SystemMonitor 가 이미 그 순서로 준다)
+    // 입력 대기가 맨 위, 그다음은 메모리순(SystemMonitor 가 이미 그 순서로 준다) 또는 CPU순
     private var sessions: [AgentSession] {
-        sort == .cpu ? monitor.sessions.sorted { $0.cpu > $1.cpu } : monitor.sessions
+        let sorted = sort == .cpu ? monitor.sessions.sorted { $0.cpu > $1.cpu } : monitor.sessions
+        let waiting = sorted.filter { activity(of: $0)?.needsInput == true }
+        return waiting + sorted.filter { activity(of: $0)?.needsInput != true }
+    }
+
+    private func activity(of session: AgentSession) -> AgentActivity? {
+        session.paneKey.flatMap { monitor.activities[$0] }
     }
 
     var body: some View {
@@ -460,14 +481,21 @@ private struct AgentsSection: View {
             if monitor.sessions.isEmpty {
                 Text("실행 중인 에이전트(claude·codex)가 없습니다").font(.callout).foregroundStyle(.secondary)
             } else {
-                Text(summary).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                summaryText.font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     .fixedSize(horizontal: false, vertical: true)
-                ForEach(sessions.prefix(8)) { session in SessionRow(session: session, mode: mode) }
+                ForEach(sessions.prefix(8)) { session in
+                    SessionRow(session: session, activity: activity(of: session), mode: mode)
+                }
                 if monitor.sessions.count > 8 {
                     Text("외 \(monitor.sessions.count - 8)개").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
+    }
+
+    private var summaryText: Text {
+        let waiting = monitor.waitingCount
+        return Text(summary) + (waiting > 0 ? Text(" · 응답 대기 \(waiting)").foregroundColor(.orange) : Text(""))
     }
 
     private var summary: String {
@@ -503,6 +531,7 @@ private struct StraysSection: View {
 // 누르면 그 세션의 Orca 탭(또는 띄운 앱)으로 간다 — SessionJump
 private struct SessionRow: View {
     let session: AgentSession
+    let activity: AgentActivity? // Orca 밖 세션은 nil
     let mode: DetailMode
     @State private var hovering = false
 
@@ -521,7 +550,8 @@ private struct SessionRow: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 6) {
-                Image(systemName: "terminal").font(.caption).foregroundStyle(.secondary).frame(width: 16)
+                Image(systemName: statusSymbol.name).font(.caption).foregroundStyle(statusSymbol.color).frame(width: 16)
+                    .help(statusHelp)
                 Text(session.project).lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 8)
                 CPUText(cores: session.cpu)
@@ -535,8 +565,33 @@ private struct SessionRow: View {
     }
 
     // 「claude 791 MB ▲320 MB/10분 · 하위 19개 · vite, vitest, rea」 — 에이전트 자체가 계속 커지면 주황
+    // 입력 대기 = 손(주황), 작업 중 = 터미널(파랑), 턴 끝남 = 체크(초록), Orca 밖 = 터미널(회색)
+    private var statusSymbol: (name: String, color: Color) {
+        switch activity?.state {
+        case .waiting: ("hand.raised.fill", .orange)
+        case .working: ("terminal", Palette.user)
+        case .done: ("checkmark.circle", .green)
+        default: ("terminal", .secondary)
+        }
+    }
+
+    private var statusHelp: String {
+        switch activity?.state {
+        case .waiting(let reason): "\(reason) — 눌러서 그 탭으로"
+        case .working: "작업 중"
+        case .done: "턴을 마치고 다음 지시를 기다림"
+        case .other(let raw): raw
+        case nil: "Orca 밖 세션 — 상태를 알 수 없음"
+        }
+    }
+
     private var detailText: Text {
-        var text = Text(session.detailHead)
+        var text = Text("")
+        if case .waiting(let reason) = activity?.state {
+            let since = activity?.since.map { " " + Format.lasting(since: $0) } ?? ""
+            text = Text("\(reason)\(since) · ").foregroundColor(.orange)
+        }
+        text = text + Text(session.detailHead)
         if let trend = session.trend, abs(trend) >= 50 * 1_048_576 {
             let change = (trend > 0 ? " ▲" : " ▼") + Format.bytes(UInt64(abs(trend))) + "/\(session.trendMinutes)분"
             text = text + Text(change).foregroundColor(trend >= 200 * 1_048_576 ? .orange : .secondary)
@@ -730,11 +785,12 @@ private struct SettingsRow: View {
                 HStack(spacing: 5) {
                     threshold
                     Spacer(minLength: 6)
+                    waitingButton
                     loginButton
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 5) { threshold }
-                    loginButton
+                    HStack(spacing: 5) { waitingButton; loginButton }
                 }
             }
             if let error = monitor.loginError {
@@ -751,6 +807,12 @@ private struct SettingsRow: View {
         Text("\(monitor.alertThresholdGB) GB").monospacedDigit()
         Button("+") { monitor.adjustThreshold(by: 1) }.buttonStyle(PillButtonStyle())
         Text("미만").foregroundStyle(.secondary)
+    }
+
+    private var waitingButton: some View {
+        Button(monitor.notifyWaiting ? "대기 알림 ✓" : "대기 알림") { monitor.toggleNotifyWaiting() }
+            .buttonStyle(PillButtonStyle(tint: monitor.notifyWaiting ? .green : nil))
+            .help("Orca 에이전트가 승인·질문에 멈추면 알림")
     }
 
     private var loginButton: some View {

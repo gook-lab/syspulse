@@ -28,6 +28,16 @@ struct UsageWindow: Identifiable, Sendable {
         let projected = usedPercent / ((length - remaining) / length)
         return projected > 100 ? .critical : projected >= 90 ? .warning : .normal
     }
+
+    // 지금 속도(사용률 ÷ 지난 시간)를 이어 갔을 때 100% 에 닿는 시각. 초기화 전에 닿을 때만.
+    var projectedExhaustion: Date? {
+        guard usedPercent >= 10, usedPercent < 100, let resetsAt else { return nil }
+        let remaining = resetsAt.timeIntervalSinceNow
+        let elapsed = length - remaining
+        guard remaining > 0, elapsed > 0 else { return nil }
+        let eta = Date().addingTimeInterval((100 - usedPercent) * elapsed / usedPercent)
+        return eta < resetsAt ? eta : nil
+    }
 }
 
 struct AgentUsage: Identifiable, Sendable {
@@ -57,22 +67,13 @@ enum UsageReader {
 
     // MARK: Orca
 
-    private static let orcaCLI: String? = {
-        let bundled = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.stablyai.orca")?
-            .appendingPathComponent("Contents/Resources/bin/orca").path
-        return bundled.flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil }
-    }()
-
     private static let providerNames = [
         "claude": "Claude", "codex": "Codex", "cursor": "Cursor", "gemini": "Gemini", "kimi": "Kimi",
         "grok": "Grok", "minimax": "MiniMax", "antigravity": "Antigravity", "zcode": "ZCode", "opencodeGo": "OpenCode Go",
     ]
 
     static func orca() -> [AgentUsage] {
-        guard let cli = orcaCLI, let data = CLI.run(cli, ["account", "list", "--json"], timeout: 4),
-              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let result = json["result"] as? [String: Any],
-              let limits = result["rateLimits"] as? [String: Any] else { return [] }
+        guard let limits = Orca.result(["account", "list", "--json"])?["rateLimits"] as? [String: Any] else { return [] }
         return limits.compactMap { key, value -> AgentUsage? in
             guard let provider = value as? [String: Any], provider["status"] as? String == "ok" else { return nil }
             let windows = orcaWindows(provider)
@@ -211,6 +212,21 @@ enum UsageReader {
         if let date = formatter.date(from: text) { return date }
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: text)
+    }
+}
+
+// Orca CLI — 앱 번들 안의 orca 스크립트. JSON 응답의 result 만 돌려준다.
+enum Orca {
+    static let cli: String? = {
+        let bundled = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.stablyai.orca")?
+            .appendingPathComponent("Contents/Resources/bin/orca").path
+        return bundled.flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil }
+    }()
+
+    static func result(_ arguments: [String]) -> [String: Any]? {
+        guard let cli, let data = CLI.run(cli, arguments, timeout: 4),
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        return json["result"] as? [String: Any]
     }
 }
 

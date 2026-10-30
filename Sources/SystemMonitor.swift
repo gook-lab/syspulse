@@ -33,6 +33,7 @@ final class SystemMonitor: ObservableObject {
     static let historyLength = 60 // 2초 × 60 = 최근 2분
     private static let swapAlertRate = 20.0 * 1_048_576 // 초당 20 MB 넘게 스왑에 쓰면 경고
     private static let thresholdKey = "alertAvailableGB"
+    private static let notifyWaitingKey = "notifyWaiting"
 
     @Published private(set) var cpu = CPULoad.idleLoad
     @Published private(set) var cores: [Double] = []
@@ -48,7 +49,10 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var alertThresholdGB: Int
     @Published private(set) var loginError: String?
     @Published private(set) var usage: [AgentUsage] = []
-    @Published private(set) var quitting: [String: QuitProgress] = [:] // 키: 앱 줄 id 또는 "stray:<pid>"
+    @Published private(set) var quitting: [String: QuitProgress] = [:]
+    @Published private(set) var activities: [String: AgentActivity] = [:] // Orca 패인 키 → 상태
+    @Published private(set) var notifyWaiting: Bool
+    private var paneKeys: [String: String] = [:] // 세션 키 → 패인 키 ("" = Orca 밖) // 키: 앱 줄 id 또는 "stray:<pid>"
 
     let hardware = Metrics.hardware()
     let bootDate = Metrics.bootDate()
@@ -70,6 +74,7 @@ final class SystemMonitor: ObservableObject {
     init(autoStart: Bool = true) {
         let saved = UserDefaults.standard.integer(forKey: Self.thresholdKey)
         alertThresholdGB = saved > 0 ? saved : 4
+        notifyWaiting = UserDefaults.standard.object(forKey: Self.notifyWaitingKey) as? Bool ?? true
         notifies = autoStart
         sample()
         guard autoStart else { return }
@@ -99,8 +104,10 @@ final class SystemMonitor: ObservableObject {
         var analysis = AgentAnalysis.analyze(records)
         applyTrends(&analysis.sessions)
         (sessions, strays) = analysis
+        attachPaneKeys()
         loadAverage = Metrics.loadAverage()
         if samples % 15 == 0, notifies { refreshUsage() } // 사용량은 30초마다, Orca CLI 를 부르니 백그라운드에서
+        if samples % 5 == 0, notifies { refreshActivity() } // 입력 대기는 10초마다
         samples += 1
         evaluateAlerts()
     }
@@ -156,7 +163,62 @@ final class SystemMonitor: ObservableObject {
         let percent = Int((min(max(cpu.total, 0), 1) * 100).rounded())
         let available = memory.map { String(format: "%.1fG", Double($0.available) / 1_073_741_824) } ?? "–"
         let tint: NSColor? = alerts.isEmpty ? nil : memory?.pressure == .critical ? .systemRed : .systemOrange
-        return MenuBarLabel.image(lines: ["\(percent)%", available], width: 5, tint: tint)
+        return MenuBarLabel.image(lines: ["\(percent)%", available], width: 5, tint: tint, badge: waitingCount)
+    }
+
+    var waitingCount: Int { activities.values.filter(\.needsInput).count }
+
+    // MARK: 에이전트 입력 대기
+
+    // 에이전트 프로세스의 ORCA_AGENT_PANE 을 한 번만 읽어 둔다 (세션 키 = pid + 시작 시각)
+    private func attachPaneKeys() {
+        let live = Set(sessions.map(\.key))
+        paneKeys = paneKeys.filter { live.contains($0.key) }
+        for index in sessions.indices {
+            let key = sessions[index].key
+            if paneKeys[key] == nil {
+                paneKeys[key] = Metrics.environment(of: sessions[index].id, keys: ["ORCA_AGENT_PANE"])["ORCA_AGENT_PANE"] ?? ""
+            }
+            sessions[index].paneKey = paneKeys[key].flatMap { $0.isEmpty ? nil : $0 }
+        }
+    }
+
+    private func refreshActivity() {
+        DispatchQueue.global(qos: .utility).async {
+            let activities = ActivityReader.read()
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.apply(activities) }
+            }
+        }
+    }
+
+    // 새로 대기에 들어간 에이전트만 알린다 (같은 대기 동안 한 번)
+    private func apply(_ next: [String: AgentActivity]) {
+        let newlyWaiting = next.values.filter { $0.needsInput && activities[$0.paneKey]?.needsInput != true }
+        activities = next
+        guard notifyWaiting, notifies else { return }
+        for activity in newlyWaiting {
+            guard case .waiting(let reason) = activity.state else { continue }
+            let project = sessions.first { $0.paneKey == activity.paneKey }?.project ?? activity.worktree
+            Self.post(title: "SysPulse — 에이전트 응답 대기", body: "\(project) · \(activity.agentType) — \(reason)")
+        }
+    }
+
+    func toggleNotifyWaiting() {
+        notifyWaiting.toggle()
+        UserDefaults.standard.set(notifyWaiting, forKey: Self.notifyWaitingKey)
+    }
+
+    // 스냅샷 전용
+    func readActivityNow() {
+        activities = ActivityReader.read()
+    }
+
+    // 스냅샷 전용: Orca 세션 둘째 줄을 입력 대기로 바꿔 모양 확인
+    func previewWaiting() {
+        guard let pane = sessions.compactMap(\.paneKey).dropFirst().first, let current = activities[pane] else { return }
+        activities[pane] = AgentActivity(paneKey: pane, state: .waiting("선택 대기"), since: Date().addingTimeInterval(-180),
+                                         worktree: current.worktree, agentType: current.agentType)
     }
 
     // MARK: 경고
@@ -196,13 +258,12 @@ final class SystemMonitor: ObservableObject {
         if let heaviest = sessions.first {
             body += "\n가장 큰 에이전트: \(heaviest.project) \(Format.bytes(heaviest.total))"
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { Self.post(body) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { Self.post(title: "SysPulse — 메모리 여유 부족", body: body) }
     }
 
     // 알림 센터 권한은 Apple 개발자 서명이 없는 빌드(ad-hoc)에서 거절될 수 있다 (UNErrorDomain 1,
     // 권한 창도 안 뜬다). 그때는 osascript 로 띄운다 — 알림이 「스크립트 편집기」 이름으로 온다.
-    nonisolated private static func post(_ body: String) {
-        let title = "SysPulse — 메모리 여유 부족"
+    nonisolated private static func post(title: String, body: String) {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
             FileHandle.standardError.write(Data(
                 "[syspulse:notify] granted=\(granted) error=\(error.map { String(describing: $0) } ?? "-")\n".utf8))
@@ -215,7 +276,7 @@ final class SystemMonitor: ObservableObject {
             content.body = body
             content.sound = .default
             UNUserNotificationCenter.current()
-                .add(UNNotificationRequest(identifier: "syspulse.alert", content: content, trigger: nil))
+                .add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
         }
     }
 
@@ -412,16 +473,33 @@ final class SystemMonitor: ObservableObject {
 
 enum MenuBarLabel {
     // width: 고정 글자 수 — 값이 9% ↔ 10% 로 바뀌어도 항목 폭이 흔들리지 않게 한다
-    static func image(lines: [String], width characters: Int, tint: NSColor? = nil) -> NSImage {
+    // badge: 입력 대기 에이전트 수 — 숫자 왼쪽에 채운 원 + 숫자를 비워 그린다 (템플릿 그대로라 메뉴 막대 색을 따른다)
+    static func image(lines: [String], width characters: Int, tint: NSColor? = nil, badge: Int = 0) -> NSImage {
         let font = NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold)
         let color = tint ?? .black
         let strings = lines.map { NSAttributedString(string: $0, attributes: [.font: font, .foregroundColor: color]) }
         let lineHeight = ceil(font.ascender - font.descender)
         let charWidth = NSAttributedString(string: "0", attributes: [.font: font]).size().width
-        let width = ceil(max(charWidth * CGFloat(characters), strings.map { $0.size().width }.max() ?? 0))
-        let image = NSImage(size: NSSize(width: width, height: lineHeight * CGFloat(lines.count)), flipped: true) { _ in
+        let textWidth = ceil(max(charWidth * CGFloat(characters), strings.map { $0.size().width }.max() ?? 0))
+        let height = lineHeight * CGFloat(lines.count)
+        let diameter: CGFloat = badge > 0 ? 13 : 0
+        let gap: CGFloat = badge > 0 ? 3 : 0
+        let width = diameter + gap + textWidth
+        let image = NSImage(size: NSSize(width: width, height: height), flipped: true) { _ in
             for (index, line) in strings.enumerated() {
                 line.draw(at: NSPoint(x: width - line.size().width, y: CGFloat(index) * lineHeight))
+            }
+            if badge > 0 {
+                let circle = NSRect(x: 0, y: (height - diameter) / 2, width: diameter, height: diameter)
+                (tint ?? .black).setFill()
+                NSBezierPath(ovalIn: circle).fill()
+                let number = NSAttributedString(string: badge > 9 ? "9+" : "\(badge)", attributes: [
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: badge > 9 ? 7 : 9, weight: .bold),
+                    .foregroundColor: NSColor.black])
+                let size = number.size()
+                NSGraphicsContext.current?.compositingOperation = .destinationOut
+                number.draw(at: NSPoint(x: circle.midX - size.width / 2, y: circle.midY - size.height / 2))
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
             }
             return true
         }
@@ -485,6 +563,22 @@ enum Format {
         if days > 0 { return "\(days)d \(hours)h" }
         if hours > 0 { return "\(hours)h \(mins)m" }
         return "\(mins)m"
+    }
+
+    // 상태가 이어진 시간 — 「3분째」
+    static func lasting(since date: Date) -> String {
+        let minutes = Int(Date().timeIntervalSince(date) / 60)
+        if minutes < 1 { return "방금" }
+        if minutes < 60 { return "\(minutes)분째" }
+        return "\(minutes / 60)시간째"
+    }
+
+    // 「10/31(토) 오전 6시」
+    static func dayHour(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ko_KR")
+        formatter.dateFormat = "M/d(E) a h시"
+        return formatter.string(from: date)
     }
 
     static func ago(_ date: Date) -> String {

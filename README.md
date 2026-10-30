@@ -55,6 +55,16 @@ Dock 아이콘 없이 메뉴 막대에만 상주합니다(`LSUIElement`). 2초�
 
 Orca 의 터미널은 Orca 앱이 아니라 별도 데몬(`Orca Terminal Host`)에 붙어 있습니다. 그래서 Orca 앱을 꺼도 에이전트는 살아 있습니다.
 
+## 입력 대기 표시 — Orca agentWait
+
+에이전트를 여러 개 돌리면 승인·질문에 멈춘 세션을 늦게 알아채는 데서 시간이 가장 많이 샙니다. Orca 가 판정한 상태(`orca worktree ps --agent-wait --json`)를 10초마다 읽어 세션 줄에 붙입니다. 에이전트 프로세스의 환경 변수 `ORCA_AGENT_PANE` 이 Orca 의 패인 키와 같아서 둘을 바로 잇습니다.
+
+- 손 아이콘(주황): 사람만 답할 수 있는 프롬프트에 멈춤(`agentWait`). 「선택 대기 3분째」처럼 이유와 경과 시간을 붙이고, 목록 맨 위로 올립니다.
+- 터미널(파랑): 작업 중 · 체크(초록): 턴을 마치고 다음 지시를 기다림 · 터미널(회색): Orca 밖 세션이라 상태를 모름
+- 메뉴 막대 숫자 왼쪽에 대기 수 배지, 탭 이름에 「대기 N」을 띄웁니다. 줄을 누르면 그 탭으로 갑니다.
+- 새로 대기에 들어간 세션마다 한 번 알림을 보냅니다(팝오버 아래 「대기 알림」으로 끄고 켭니다).
+- Orca CLI 호출은 한 번에 CPU 0.2초 정도라 10초 간격으로 둡니다.
+
 ## 세션 줄 클릭 — 창·탭으로 이동
 
 줄을 누르면 그 세션이 도는 곳으로 갑니다. 누를 때 그 프로세스의 환경 변수에서 아래 키만 읽고, 나머지(토큰 등)는 읽는 즉시 버립니다.
@@ -74,6 +84,7 @@ Orca 상태 줄처럼 5시간 세션 · 주간 한도를 `세션 ▬ 18% 2h 12m 
 | Claude | `~/.claude/plugins/claude-hud/usage-snapshot.json` — Claude Code 가 상태 줄에 넘기는 `rate_limits` 를 claude-hud 가 저장한 파일 | claude-hud 설정(`~/.claude/plugins/claude-hud/config.json`)에 `"display": { "externalUsageWritePath": "~/.claude/plugins/claude-hud/usage-snapshot.json" }`. 경로를 바꿨으면 `defaults write lab.gook.syspulse claudeUsagePath <경로>` |
 | Codex | 세션 로그 `rollout-*.jsonl` 의 마지막 `rate_limits` (오늘·어제 폴더) | 없음. `~/.codex/sessions` 와 Orca 의 Codex 홈(`~/Library/Application Support/orca/codex-accounts/*/home/sessions`)을 함께 봅니다 |
 
+- 지금 속도면 초기화 전에 한도에 닿는 창이 있으면, 가장 이른 것을 「Claude 주간: 10/31(토) 오전 6시쯤 소진 예상 (초기화 11/2(월) 오후 2시)」처럼 아래에 적습니다. 사용률 ÷ 지난 시간을 그대로 이어 간 단순 투영입니다.
 - 색은 claude-hud 의 페이스 기준을 따릅니다. 지금 속도를 초기화 시각까지 늘렸을 때 한도의 90% 이상이면 주황, 넘으면 빨강이고, 90% 이상 썼으면 늘 빨강입니다(10% 미만은 보지 않습니다).
 - Claude 값은 Claude Code 상태 줄이 그려질 때만, Codex 값은 Codex 가 응답할 때만 바뀝니다. 15분 넘게 그대로면 「2시간 전 값」을 붙이거나(자리가 없으면 줄을 흐리게) 알립니다. 초기화 시각이 지난 창은 「초기화됨」으로 표시합니다.
 
