@@ -46,10 +46,11 @@ struct AgentUsage: Identifiable, Sendable {
     let windows: [UsageWindow]
     let reportedAt: Date?
 
-    // 정렬 기준: 5시간 세션 사용률, 세션 창이 없으면(Cursor 등) 가장 높은 창
+    // 정렬 기준: 5시간 세션 사용률, 세션 창이 없으면(Cursor 등) 가장 높은 창. 초기화 시각이 지난 창은 0
     var rank: Double {
-        windows.first { $0.id == "session" || $0.id == "five_hour" || $0.id == "primary" }?.usedPercent
-            ?? windows.map(\.usedPercent).max() ?? 0
+        let current = { (window: UsageWindow) in window.isReset ? 0 : window.usedPercent }
+        return windows.first { $0.id == "session" || $0.id == "five_hour" || $0.id == "primary" }.map(current)
+            ?? windows.map(current).max() ?? 0
     }
 }
 

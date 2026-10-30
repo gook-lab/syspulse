@@ -60,7 +60,7 @@ struct StrayTree: Identifiable {
 
 enum AgentAnalysis {
     static let agentCommands: Set<String> = ["claude", "codex", "gemini", "opencode", "aider"]
-    private static let devCommands = Metrics.interpreters.union(Metrics.runners)
+    static let devCommands = Metrics.interpreters.union(Metrics.runners)
         .union(["esbuild", "tsx", "vite", "chrome-headless-shell"])
 
     static func analyze(_ records: [ProcessRecord]) -> (sessions: [AgentSession], strays: [StrayTree]) {

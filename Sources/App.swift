@@ -211,6 +211,7 @@ enum Snapshot {
         }
         monitor.readUsageNow()
         monitor.readActivityNow()
+        if tab == .worktrees { monitor.scanWorktreesNow() }
         if CommandLine.arguments.contains("--waiting-first") { monitor.previewWaiting() }
         if quittingFirst {
             // 끌 수 있는 첫 두 줄: 하나는 종료 중, 하나는 응답 없음

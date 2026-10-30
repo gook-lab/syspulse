@@ -18,7 +18,7 @@ enum DetailMode {
 }
 
 enum ListTab: String {
-    case agents, strays, apps
+    case agents, strays, apps, worktrees
 }
 
 enum SortKey: String {
@@ -88,13 +88,14 @@ struct DetailView: View {
     @ViewBuilder
     private var listColumn: some View {
         TabPicker(selection: tab, agentCount: monitor.sessions.count, waitingCount: monitor.waitingCount,
-                  strayCount: monitor.strays.count,
+                  strayCount: monitor.strays.count, worktreeCount: monitor.worktrees.count,
                   sort: sort, onSelect: { storedTab = $0.rawValue },
                   onToggleSort: { storedSort = (sort == .memory ? SortKey.cpu : .memory).rawValue })
         switch tab {
         case .agents: AgentsSection(monitor: monitor, sort: sort, mode: mode)
         case .strays: StraysSection(monitor: monitor, sort: sort)
         case .apps: AppsSection(monitor: monitor, sort: sort, previewConfirmFirst: previewConfirmFirstApp)
+        case .worktrees: WorktreesSection(monitor: monitor)
         }
         Separator()
         SettingsRow(monitor: monitor)
@@ -423,6 +424,7 @@ private struct TabPicker: View {
     let agentCount: Int
     let waitingCount: Int
     let strayCount: Int
+    let worktreeCount: Int
     let sort: SortKey
     let onSelect: (ListTab) -> Void
     let onToggleSort: () -> Void
@@ -452,6 +454,7 @@ private struct TabPicker: View {
                   + (waitingCount > 0 ? " · 대기 \(waitingCount)" : ""), compact: compact)
         tabButton(.strays, title: strayCount > 0 ? "세션 밖 \(strayCount)" : "세션 밖", compact: compact)
         tabButton(.apps, title: "앱", compact: compact)
+        tabButton(.worktrees, title: worktreeCount > 0 ? "워크트리 \(worktreeCount)" : "워크트리", compact: compact)
     }
 
     private func tabButton(_ tab: ListTab, title: String, compact: Bool) -> some View {
@@ -504,6 +507,102 @@ private struct AgentsSection: View {
         let cpu = monitor.sessions.reduce(0) { $0 + $1.cpu }
         return "에이전트 \(count)개 · 합계 \(Format.bytes(total)) · 평균 \(Format.bytes(total / UInt64(count)))"
             + " · CPU \(Format.cpu(cpu))"
+    }
+}
+
+// 끝난 worktree 정리 — 크기순. 잃을 게 없는 것(변경 0 · 원격에 없는 커밋 0 · 안에서 도는 프로세스 없음)만 「정리」.
+private struct WorktreesSection: View {
+    @ObservedObject var monitor: SystemMonitor
+
+    private var rows: [WorktreeInfo] {
+        monitor.worktrees.sorted { ($0.size ?? 0, $0.id) > ($1.size ?? 0, $1.id) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(summary).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(rows.prefix(12)) { worktree in WorktreeRow(worktree: worktree, monitor: monitor) }
+            if rows.count > 12 {
+                Text("외 \(rows.count - 12)개").font(.caption).foregroundStyle(.secondary)
+            }
+            Text("「정리」는 git worktree remove 입니다 — 브랜치와 커밋은 그대로 남고, 변경이 있으면 git 이 거절합니다. git 이 무시하는 파일(node_modules · .env.local 등)은 폴더와 함께 지워집니다.")
+                .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+        }
+        .onAppear { monitor.refreshWorktrees() }
+    }
+
+    private var summary: String {
+        if monitor.worktrees.isEmpty {
+            return monitor.worktreeScanning ? "worktree 를 찾는 중…" : "메인 말고 다른 worktree 가 없습니다"
+        }
+        let total = monitor.worktrees.compactMap(\.size).reduce(0, +)
+        let removable = monitor.worktrees.filter(\.removable)
+        let reclaim = removable.compactMap(\.size).reduce(0, +)
+        var text = "\(monitor.worktrees.count)개 · \(Format.bytes(total)) · 정리 가능 \(removable.count)개 \(Format.bytes(reclaim))"
+        if monitor.worktreeScanning { text += " · 크기 재는 중…" }
+        return text
+    }
+}
+
+private struct WorktreeRow: View {
+    let worktree: WorktreeInfo
+    @ObservedObject var monitor: SystemMonitor
+    @State private var confirming = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 6) {
+                Image(systemName: worktree.missing ? "folder.badge.questionmark" : "folder")
+                    .font(.caption).foregroundStyle(.secondary).frame(width: 16)
+                Text("\(worktree.repoName) · \(worktree.name)").lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 6)
+                Text(worktree.size.map(Format.bytes) ?? "…").monospacedDigit()
+                    .foregroundStyle(worktree.size == nil ? .tertiary : .primary)
+                action
+            }
+            .font(.callout)
+            detail.font(.caption2).lineLimit(1).truncationMode(.tail).padding(.leading, 22)
+            if let error = monitor.worktreeErrors[worktree.id] {
+                Text(error).font(.caption2).foregroundStyle(.red).padding(.leading, 22)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .help(worktree.id)
+    }
+
+    @ViewBuilder
+    private var action: some View {
+        if monitor.removingWorktrees.contains(worktree.id) {
+            QuittingLabel(stalled: false, text: "정리 중…")
+        } else if worktree.removable {
+            // 두 번 눌러야 지운다 — 4초 안에 「확인」을 안 누르면 되돌아간다
+            Button(confirming ? "확인" : "정리") {
+                if confirming {
+                    confirming = false
+                    monitor.removeWorktree(worktree)
+                } else {
+                    confirming = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) { confirming = false }
+                }
+            }
+            .buttonStyle(PillButtonStyle(tint: confirming ? .red : .green))
+        }
+    }
+
+    // 「3일 전 · feature/x · main 에 들어감」 / 남길 이유가 있으면 주황으로
+    private var detail: Text {
+        if worktree.missing { return Text("폴더 없음 — git 기록만 남음").foregroundColor(.secondary) }
+        var parts: [Text] = []
+        if let date = worktree.lastCommit { parts.append(Text(Format.ago(date).replacingOccurrences(of: " 값", with: ""))) }
+        if let branch = worktree.branch { parts.append(Text(branch)) } else { parts.append(Text("브랜치 없음(detached)")) }
+        if worktree.merged { parts.append(Text("기본 브랜치에 들어감")) }
+        if worktree.changes > 0 { parts.append(Text("변경 \(worktree.changes)").foregroundColor(.orange)) }
+        if worktree.unpushed > 0 { parts.append(Text("푸시 안 한 커밋 \(worktree.unpushed)").foregroundColor(.orange)) }
+        if worktree.changes < 0 || worktree.unpushed < 0 { parts.append(Text("git 확인 실패").foregroundColor(.orange)) }
+        if !worktree.busy.isEmpty { parts.append(Text("사용 중: " + worktree.busy.prefix(2).joined(separator: ", ")).foregroundColor(Palette.user)) }
+        if worktree.locked { parts.append(Text("잠김").foregroundColor(.orange)) }
+        return parts.dropFirst().reduce(parts.first ?? Text("")) { $0 + Text(" · ") + $1 }.foregroundColor(.secondary)
     }
 }
 
@@ -1070,11 +1169,12 @@ private struct Spinner: View {
 
 private struct QuittingLabel: View {
     let stalled: Bool
+    var text = "종료 중…"
 
     var body: some View {
         HStack(spacing: 5) {
             Spinner().frame(width: 12, height: 12)
-            Text(stalled ? "응답 없음" : "종료 중…").font(.caption).foregroundStyle(stalled ? .orange : .secondary)
+            Text(stalled ? "응답 없음" : text).font(.caption).foregroundStyle(stalled ? .orange : .secondary)
         }
         .fixedSize()
     }

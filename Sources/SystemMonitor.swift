@@ -52,6 +52,12 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var quitting: [String: QuitProgress] = [:]
     @Published private(set) var activities: [String: AgentActivity] = [:] // Orca 패인 키 → 상태
     @Published private(set) var notifyWaiting: Bool
+    @Published private(set) var worktrees: [WorktreeInfo] = []
+    @Published private(set) var worktreeScanning = false
+    @Published private(set) var removingWorktrees: Set<String> = []
+    @Published private(set) var worktreeErrors: [String: String] = [:]
+    private var lastWorktreeScan: Date?
+    private var lastRecords: [ProcessRecord] = []
     private var paneKeys: [String: String] = [:] // 세션 키 → 패인 키 ("" = Orca 밖) // 키: 앱 줄 id 또는 "stray:<pid>"
 
     let hardware = Metrics.hardware()
@@ -100,6 +106,7 @@ final class SystemMonitor: ObservableObject {
 
         var records = Metrics.processes()
         applyCPU(&records)
+        lastRecords = records
         apps = appRows(records)
         var analysis = AgentAnalysis.analyze(records)
         applyTrends(&analysis.sessions)
@@ -108,6 +115,7 @@ final class SystemMonitor: ObservableObject {
         loadAverage = Metrics.loadAverage()
         if samples % 15 == 0, notifies { refreshUsage() } // 사용량은 30초마다, Orca CLI 를 부르니 백그라운드에서
         if samples % 5 == 0, notifies { refreshActivity() } // 입력 대기는 10초마다
+        if samples == 3 || samples % 900 == 0, notifies { refreshWorktrees() } // worktree 는 켤 때와 30분마다
         samples += 1
         evaluateAlerts()
     }
@@ -207,6 +215,95 @@ final class SystemMonitor: ObservableObject {
     func toggleNotifyWaiting() {
         notifyWaiting.toggle()
         UserDefaults.standard.set(notifyWaiting, forKey: Self.notifyWaitingKey)
+    }
+
+    // MARK: worktree 정리
+
+    // 저장소 = 지금 도는 에이전트의 작업 폴더 + Orca 에 등록된 저장소 + 전에 본 저장소.
+    // 목록은 바로 올리고, 크기(du)는 다 잰 것부터 채운다. force 가 아니면 2분 안에 다시 재지 않는다.
+    func refreshWorktrees(force: Bool = false) {
+        guard !worktreeScanning else { return }
+        if !force, let lastWorktreeScan, Date().timeIntervalSince(lastWorktreeScan) < 120 { return }
+        worktreeScanning = true
+        lastWorktreeScan = Date()
+        let cwds = Array(Set(sessions.map(\.cwd)))
+        let busy = busyPaths()
+        let known = UserDefaults.standard.stringArray(forKey: Self.knownReposKey) ?? []
+        DispatchQueue.global(qos: .utility).async {
+            let repos = Self.discoverRepos(cwds: cwds, known: known)
+            var list = WorktreeScanner.scan(repos: repos, busyPaths: busy)
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.worktrees = list
+                    UserDefaults.standard.set(repos, forKey: Self.knownReposKey)
+                }
+            }
+            let pending = list.indices.filter { list[$0].size == nil }
+            let paths = pending.map { list[$0].id }
+            let sizes = UnsafeMutableBufferPointer<UInt64?>.allocate(capacity: pending.count)
+            sizes.initialize(repeating: nil)
+            DispatchQueue.concurrentPerform(iterations: paths.count) { sizes[$0] = WorktreeScanner.measureSize(paths[$0]) }
+            for (offset, index) in pending.enumerated() { list[index].size = sizes[offset] }
+            sizes.deallocate()
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.worktrees = list.filter { !self.removedWorktrees.contains($0.id) }
+                    self.worktreeScanning = false
+                }
+            }
+        }
+    }
+
+    private static let knownReposKey = "knownRepos"
+    private var removedWorktrees: Set<String> = []
+
+    nonisolated private static func discoverRepos(cwds: [String], known: [String]) -> [String] {
+        var repos = Set(known.filter { FileManager.default.fileExists(atPath: $0 + "/.git") })
+        for cwd in cwds { if let root = WorktreeScanner.repoRoot(of: cwd) { repos.insert(root) } }
+        for repo in Orca.result(["repo", "list", "--json"])?["repos"] as? [[String: Any]] ?? [] {
+            if let path = repo["path"] as? String { repos.insert(path) }
+        }
+        return repos.sorted()
+    }
+
+    // 에이전트 작업 폴더 + dev 프로세스(node·python 등)의 작업 폴더 — 이 안에 있는 worktree 는 지우지 않는다
+    private func busyPaths() -> [(path: String, name: String)] {
+        let agents = sessions.map { (path: $0.cwd, name: "\($0.kind) · \($0.project)") }
+        let dev = lastRecords.filter { AgentAnalysis.devCommands.contains($0.command) }.compactMap { record in
+            Metrics.workingDirectory(of: record.pid).map { (path: $0, name: AgentAnalysis.shortName(record.label)) }
+        }
+        return agents + dev
+    }
+
+    func removeWorktree(_ worktree: WorktreeInfo) {
+        guard worktree.removable, !removingWorktrees.contains(worktree.id) else { return }
+        removingWorktrees.insert(worktree.id)
+        worktreeErrors[worktree.id] = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let error = WorktreeScanner.remove(worktree)
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.removingWorktrees.remove(worktree.id)
+                    if let error {
+                        self.worktreeErrors[worktree.id] = error
+                    } else {
+                        self.removedWorktrees.insert(worktree.id)
+                        self.worktrees.removeAll { $0.id == worktree.id || (worktree.missing && $0.missing && $0.repo == worktree.repo) }
+                    }
+                }
+            }
+        }
+    }
+
+    // 스냅샷 전용: 크기까지 다 잰 뒤 그린다
+    func scanWorktreesNow() {
+        let repos = Self.discoverRepos(cwds: Array(Set(sessions.map(\.cwd))),
+                                       known: UserDefaults.standard.stringArray(forKey: Self.knownReposKey) ?? [])
+        var list = WorktreeScanner.scan(repos: repos, busyPaths: busyPaths())
+        for index in list.indices where list[index].size == nil { list[index].size = WorktreeScanner.measureSize(list[index].id) }
+        worktrees = list
     }
 
     // 스냅샷 전용
