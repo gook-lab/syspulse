@@ -18,8 +18,11 @@ struct WorktreeInfo: Identifiable, Sendable {
     var name: String { (id as NSString).lastPathComponent }
     var repoName: String { (repo as NSString).lastPathComponent }
 
-    // 지워도 잃을 게 없는 것만: 변경 0 · 원격에 없는 커밋 0 · 안에서 도는 프로세스 없음 · 잠기지 않음
-    var removable: Bool { !locked && busy.isEmpty && (missing || (changes == 0 && unpushed == 0)) }
+    // 24시간 안에 커밋한 worktree 는 아직 쓰는 중으로 본다 (에이전트가 다른 폴더에서 잠깐 쉬는 중일 수 있다)
+    var recent: Bool { lastCommit.map { Date().timeIntervalSince($0) < 86_400 } ?? false }
+
+    // 지워도 잃을 게 없고 당분간 안 쓸 것만: 변경 0 · 원격에 없는 커밋 0 · 안에서 도는 프로세스 없음 · 잠기지 않음 · 최근 작업 아님
+    var removable: Bool { !locked && busy.isEmpty && (missing || (changes == 0 && unpushed == 0 && !recent)) }
 }
 
 enum WorktreeScanner {
@@ -112,5 +115,33 @@ enum WorktreeScanner {
     private static func text(_ arguments: [String]) -> String? {
         CLI.run(git, arguments, timeout: 20).flatMap { String(data: $0, encoding: .utf8) }?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+// 「목록 복사」 — Claude 등에 붙여 「어떤 걸 지워도 되는지」 검토를 맡기기 좋게 경로와 판정 근거를 모두 담는다
+enum WorktreeReport {
+    static func markdown(_ worktrees: [WorktreeInfo]) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        var lines = [
+            "# git worktree 목록 (SysPulse, \(formatter.string(from: Date())))",
+            "",
+            "메인 worktree 는 뺐습니다. 정리 가능 = 변경 0 · 원격에 없는 커밋 0 · 안에서 도는 프로세스 없음 · 잠기지 않음 · 마지막 커밋이 24시간 전.",
+            "변경·푸시 안 한 커밋 -1 은 git 확인 실패입니다.",
+            "",
+            "| 저장소 | worktree 경로 | 브랜치 | 크기 | 마지막 커밋 | 기본 브랜치에 들어감 | 변경 | 푸시 안 한 커밋 | 사용 중 | 정리 가능 |",
+            "|---|---|---|---|---|---|---|---|---|---|",
+        ]
+        for w in worktrees {
+            let branch: String = w.branch.map { "`\($0)`" } ?? "(detached)"
+            let size: String = w.size.map(Format.bytes) ?? "?"
+            let last: String = w.lastCommit.map { formatter.string(from: $0) } ?? "-"
+            let changes: String = w.missing ? "폴더 없음" : String(w.changes)
+            let busy: String = w.busy.isEmpty ? "-" : w.busy.joined(separator: ", ")
+            var cells: [String] = [w.repoName, "`\(w.id)`", branch, size, last]
+            cells += [w.merged ? "예" : "아니오", changes, String(w.unpushed), busy, w.removable ? "예" : "아니오"]
+            lines.append("| " + cells.map { $0.replacingOccurrences(of: "|", with: "\\|") }.joined(separator: " | ") + " |")
+        }
+        return lines.joined(separator: "\n") + "\n"
     }
 }

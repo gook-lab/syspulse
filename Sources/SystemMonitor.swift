@@ -57,6 +57,10 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var removingWorktrees: Set<String> = []
     @Published private(set) var worktreeErrors: [String: String] = [:]
     private var lastWorktreeScan: Date?
+    @Published private(set) var update: UpdateInfo?
+    @Published private(set) var updating = false
+    @Published private(set) var updateMessage: String? // 확인 결과·실패 이유
+    private var checkingUpdate = false
     private var lastRecords: [ProcessRecord] = []
     private var paneKeys: [String: String] = [:] // 세션 키 → 패인 키 ("" = Orca 밖) // 키: 앱 줄 id 또는 "stray:<pid>"
 
@@ -116,6 +120,7 @@ final class SystemMonitor: ObservableObject {
         if samples % 15 == 0, notifies { refreshUsage() } // 사용량은 30초마다, Orca CLI 를 부르니 백그라운드에서
         if samples % 5 == 0, notifies { refreshActivity() } // 입력 대기는 10초마다
         if samples == 3 || samples % 900 == 0, notifies { refreshWorktrees() } // worktree 는 켤 때와 30분마다
+        if samples == 10 || samples % 10_800 == 0, notifies { checkUpdate() } // 업데이트는 켠 뒤 20초, 그다음 6시간마다
         samples += 1
         evaluateAlerts()
     }
@@ -215,6 +220,53 @@ final class SystemMonitor: ObservableObject {
     func toggleNotifyWaiting() {
         notifyWaiting.toggle()
         UserDefaults.standard.set(notifyWaiting, forKey: Self.notifyWaitingKey)
+    }
+
+    // MARK: 업데이트
+
+    func checkUpdate(manual: Bool = false) {
+        guard !checkingUpdate, !updating else { return }
+        checkingUpdate = true
+        if manual { updateMessage = "업데이트 확인 중…" }
+        DispatchQueue.global(qos: .utility).async {
+            let found = Updater.check()
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.applyUpdateCheck(found, manual: manual) }
+            }
+        }
+    }
+
+    // 같은 원격 커밋으로는 한 번만 알린다
+    private func applyUpdateCheck(_ found: UpdateInfo?, manual: Bool) {
+        checkingUpdate = false
+        update = found
+        if manual { updateMessage = found == nil ? (Updater.sourceDir == nil ? "개발 빌드 — 소스 폴더를 모릅니다" : "최신입니다") : nil }
+        guard let found, notifies,
+              UserDefaults.standard.string(forKey: Self.notifiedUpdateKey) != found.remoteHead else { return }
+        UserDefaults.standard.set(found.remoteHead, forKey: Self.notifiedUpdateKey)
+        Self.post(title: "SysPulse 업데이트가 있습니다",
+                  body: "새 커밋 \(found.behind)개 — " + (found.subjects.first ?? "") + "\n메뉴 막대 SysPulse 에서 「업데이트」를 누르세요")
+    }
+
+    private static let notifiedUpdateKey = "notifiedUpdateHead"
+
+    func installUpdate() {
+        guard !updating else { return }
+        updating = true
+        updateMessage = nil
+        Updater.install { message in
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.updating = false
+                    self?.updateMessage = message
+                }
+            }
+        }
+    }
+
+    // 스냅샷 전용
+    func previewUpdate() {
+        update = UpdateInfo(behind: 3, subjects: ["feat: 워크트리 탭", "fix: 사용량 정렬", "docs: 설치 가이드"], remoteHead: "preview")
     }
 
     // MARK: worktree 정리

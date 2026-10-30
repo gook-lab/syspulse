@@ -19,6 +19,12 @@ for arch in $ARCHS; do
 done
 lipo -create "${slices[@]}" -output "$APP/Contents/MacOS/SysPulse"
 cp Info.plist "$APP/Contents/Info.plist"
+# 버전 = 1.<커밋 수>. 앱이 업데이트를 스스로 확인하도록 소스 폴더와 커밋을 적어 둔다 (Updater.swift)
+COUNT=$(git rev-list --count HEAD 2>/dev/null || echo 0)
+/usr/libexec/PlistBuddy \
+  -c "Set :CFBundleShortVersionString 1.$COUNT" -c "Set :CFBundleVersion $COUNT" \
+  -c "Add :SysPulseCommit string $(git rev-parse HEAD 2>/dev/null)" \
+  -c "Add :SysPulseSourceDir string $(pwd)" "$APP/Contents/Info.plist"
 mkdir -p "$APP/Contents/Resources"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/" # 다시 그리려면 scripts/make-icon.swift
 codesign --force --sign - "$APP" >/dev/null

@@ -76,6 +76,7 @@ struct DetailView: View {
     @ViewBuilder
     private var systemColumn: some View {
         HeaderView(monitor: monitor, mode: mode)
+        if monitor.update != nil || monitor.updating { UpdateBanner(monitor: monitor) }
         if !monitor.alerts.isEmpty { AlertBanner(reasons: monitor.alerts) }
         Separator()
         CPUSection(monitor: monitor)
@@ -87,7 +88,7 @@ struct DetailView: View {
 
     @ViewBuilder
     private var listColumn: some View {
-        TabPicker(selection: tab, agentCount: monitor.sessions.count, waitingCount: monitor.waitingCount,
+        TabPicker(selection: tab, showsSort: tab != .worktrees, agentCount: monitor.sessions.count, waitingCount: monitor.waitingCount,
                   strayCount: monitor.strays.count, worktreeCount: monitor.worktrees.count,
                   sort: sort, onSelect: { storedTab = $0.rawValue },
                   onToggleSort: { storedSort = (sort == .memory ? SortKey.cpu : .memory).rawValue })
@@ -125,6 +126,44 @@ private struct HeaderView: View {
             .buttonStyle(IconButtonStyle(active: mode == .pinned))
             .help(mode == .pinned ? "고정 해제" : "화면에 고정 — 항상 위에 뜨는 창으로")
         }
+    }
+}
+
+// 새 커밋이 올라오면 위에 띄운다 — 「업데이트」는 소스 폴더에서 pull + build.sh install (앱이 다시 켜진다)
+private struct UpdateBanner: View {
+    @ObservedObject var monitor: SystemMonitor
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "arrow.down.circle.fill").foregroundStyle(Palette.user)
+            VStack(alignment: .leading, spacing: 3) {
+                if monitor.updating {
+                    HStack(spacing: 6) {
+                        Spinner().frame(width: 12, height: 12)
+                        Text("업데이트 중… 빌드가 끝나면 앱이 다시 켜집니다").font(.caption.weight(.semibold))
+                    }
+                } else if let update = monitor.update {
+                    ViewThatFits(in: .horizontal) {
+                        HStack { title(update); Spacer(minLength: 6); button }
+                        VStack(alignment: .leading, spacing: 4) { title(update); button }
+                    }
+                    ForEach(update.subjects, id: \.self) { subject in
+                        Text("· " + subject).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Palette.user.opacity(0.14)))
+    }
+
+    private func title(_ update: UpdateInfo) -> some View {
+        Text("업데이트가 있습니다 — 새 커밋 \(update.behind)개").font(.caption.weight(.semibold)).fixedSize()
+    }
+
+    private var button: some View {
+        Button("업데이트") { monitor.installUpdate() }.buttonStyle(PillButtonStyle(tint: Palette.user))
     }
 }
 
@@ -421,6 +460,7 @@ private struct QuotaBar: View {
 
 private struct TabPicker: View {
     let selection: ListTab
+    let showsSort: Bool
     let agentCount: Int
     let waitingCount: Int
     let strayCount: Int
@@ -440,7 +480,12 @@ private struct TabPicker: View {
         }
     }
 
+    @ViewBuilder
     private var sortButton: some View {
+        if showsSort { sortToggle }
+    }
+
+    private var sortToggle: some View {
         Button(action: onToggleSort) {
             Label(sort == .memory ? "메모리순" : "CPU순", systemImage: "arrow.up.arrow.down")
         }
@@ -513,6 +558,14 @@ private struct AgentsSection: View {
 // 끝난 worktree 정리 — 크기순. 잃을 게 없는 것(변경 0 · 원격에 없는 커밋 0 · 안에서 도는 프로세스 없음)만 「정리」.
 private struct WorktreesSection: View {
     @ObservedObject var monitor: SystemMonitor
+    @State private var copied = false
+
+    private func copy() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(WorktreeReport.markdown(rows), forType: .string)
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copied = false }
+    }
 
     private var rows: [WorktreeInfo] {
         monitor.worktrees.sorted { ($0.size ?? 0, $0.id) > ($1.size ?? 0, $1.id) }
@@ -520,8 +573,16 @@ private struct WorktreesSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(summary).font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(summary).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                if !monitor.worktrees.isEmpty {
+                    Button(copied ? "복사됨 ✓" : "목록 복사") { copy() }
+                        .buttonStyle(PillButtonStyle(tint: copied ? .green : nil))
+                        .help("Markdown 표로 복사 — Claude 에 붙여 검토를 맡길 수 있습니다")
+                }
+            }
             ForEach(rows.prefix(12)) { worktree in WorktreeRow(worktree: worktree, monitor: monitor) }
             if rows.count > 12 {
                 Text("외 \(rows.count - 12)개").font(.caption).foregroundStyle(.secondary)
@@ -601,6 +662,7 @@ private struct WorktreeRow: View {
         if worktree.unpushed > 0 { parts.append(Text("푸시 안 한 커밋 \(worktree.unpushed)").foregroundColor(.orange)) }
         if worktree.changes < 0 || worktree.unpushed < 0 { parts.append(Text("git 확인 실패").foregroundColor(.orange)) }
         if !worktree.busy.isEmpty { parts.append(Text("사용 중: " + worktree.busy.prefix(2).joined(separator: ", ")).foregroundColor(Palette.user)) }
+        else if worktree.recent && worktree.changes == 0 && worktree.unpushed == 0 { parts.append(Text("최근 작업").foregroundColor(Palette.user)) }
         if worktree.locked { parts.append(Text("잠김").foregroundColor(.orange)) }
         return parts.dropFirst().reduce(parts.first ?? Text("")) { $0 + Text(" · ") + $1 }.foregroundColor(.secondary)
     }
@@ -946,9 +1008,16 @@ private struct FooterView: View {
                 Text("부팅 후 \(Format.uptime(since: boot))")
             }
             Text("열 상태 \(Format.thermal(ProcessInfo.processInfo.thermalState))")
+            // 버전을 누르면 바로 업데이트 확인
+            Button { monitor.checkUpdate(manual: true) } label: {
+                Text("v\(Updater.version) · \(Updater.shortCommit)" + (monitor.updateMessage.map { " — " + $0 } ?? ""))
+                    .foregroundStyle(monitor.updateMessage?.hasPrefix("업데이트 실패") == true ? .red : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help("눌러서 업데이트 확인")
         }
         .font(.caption).foregroundStyle(.secondary)
-        .fixedSize()
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder

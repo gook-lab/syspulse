@@ -212,6 +212,11 @@ enum Snapshot {
         monitor.readUsageNow()
         monitor.readActivityNow()
         if tab == .worktrees { monitor.scanWorktreesNow() }
+        if CommandLine.arguments.contains("--preview-update") { monitor.previewUpdate() }
+        // --copy-worktrees <파일>: 「목록 복사」와 같은 내용을 파일로 (개발 확인용)
+        if let index = CommandLine.arguments.firstIndex(of: "--copy-worktrees"), index + 1 < CommandLine.arguments.count {
+            try? WorktreeReport.markdown(monitor.worktrees).write(toFile: CommandLine.arguments[index + 1], atomically: true, encoding: .utf8)
+        }
         if CommandLine.arguments.contains("--waiting-first") { monitor.previewWaiting() }
         if quittingFirst {
             // 끌 수 있는 첫 두 줄: 하나는 종료 중, 하나는 응답 없음
