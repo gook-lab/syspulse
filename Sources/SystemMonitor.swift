@@ -51,6 +51,8 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var usage: [AgentUsage] = []
     @Published private(set) var quitting: [String: QuitProgress] = [:]
     @Published private(set) var activities: [String: AgentActivity] = [:] // Orca 패인 키 → 상태
+    @Published private(set) var activityReadAt: Date? // Orca 상태를 마지막으로 읽은 시각
+    @Published private(set) var orcaFailing = false // Orca 는 있는데 상태를 못 읽는 중 — activities 는 직전 값
     @Published private(set) var notifyWaiting: Bool
     @Published private(set) var worktrees: [WorktreeInfo] = []
     @Published private(set) var worktreeScanning = false
@@ -58,7 +60,9 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var worktreeErrors: [String: String] = [:]
     private var lastWorktreeScan: Date?
     @Published private(set) var ports: [ListeningPort] = []
-    private var branches: [String: String] = [:] // 작업 폴더 → 브랜치 (포트 지도용, 한 번만 묻는다)
+    private var branches: [String: String] = [:] // 작업 폴더 → 브랜치 (포트 지도용)
+    private var branchesReadAt = Date.distantPast
+    private var resolvingBranches = false
     @Published private(set) var update: UpdateInfo?
     @Published private(set) var updating = false
     @Published private(set) var updateMessage: String? // 확인 결과·실패 이유
@@ -229,7 +233,14 @@ final class SystemMonitor: ObservableObject {
         DispatchQueue.global(qos: .utility).async {
             let activities = ActivityReader.read()
             DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated { self?.apply(activities) }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // 실패하면 직전 값을 두고 실패만 표시한다 (조용히 비우면 대기 알림이 꺼진 줄 모른다)
+                    self.orcaFailing = activities == nil
+                    guard let activities else { return }
+                    self.activityReadAt = Date()
+                    self.apply(activities)
+                }
             }
         }
     }
@@ -262,16 +273,23 @@ final class SystemMonitor: ObservableObject {
         var found = PortScanner.scan(lastRecords, owners: owners)
         for index in found.indices { found[index].branch = found[index].cwd.flatMap { branches[$0] } }
         ports = found
-        let unknown = Set(found.compactMap(\.cwd)).subtracting(branches.keys)
-        guard !unknown.isEmpty else { return }
+        // 새 폴더는 바로, 전부는 1분마다 다시 묻는다 (같은 worktree 에서 git switch 해도 따라가게). 사라진 서버 폴더는 잊는다.
+        let cwds = Set(found.compactMap(\.cwd))
+        branches = branches.filter { cwds.contains($0.key) }
+        let stale = Date().timeIntervalSince(branchesReadAt) >= 60
+        let targets = stale ? cwds : cwds.subtracting(branches.keys)
+        guard !targets.isEmpty, !resolvingBranches else { return }
+        resolvingBranches = true
+        if stale { branchesReadAt = Date() }
         DispatchQueue.global(qos: .utility).async {
-            let resolved = unknown.map { cwd in
+            let resolved = targets.map { cwd in
                 (cwd, CLI.run("/usr/bin/git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], timeout: 5)
                     .flatMap { String(data: $0, encoding: .utf8) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
             }
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    self.resolvingBranches = false
                     for (cwd, branch) in resolved { self.branches[cwd] = branch }
                     for index in self.ports.indices {
                         self.ports[index].branch = self.ports[index].cwd.flatMap { self.branches[$0] }
@@ -295,11 +313,22 @@ final class SystemMonitor: ObservableObject {
         }
     }
 
-    // 같은 원격 커밋으로는 한 번만 알린다
-    private func applyUpdateCheck(_ found: UpdateInfo?, manual: Bool) {
+    // 같은 원격 커밋으로는 한 번만 알린다. 소스 폴더가 없는 것처럼 다시 설치해야 하는 실패는 자동 확인 때도 푸터에 남긴다.
+    private func applyUpdateCheck(_ result: UpdateCheck, manual: Bool) {
         checkingUpdate = false
+        let found: UpdateInfo?
+        switch result {
+        case .upToDate:
+            found = nil
+            if manual || updateMessage?.hasPrefix("업데이트 실패") != true { updateMessage = manual ? "최신입니다" : nil }
+        case .available(let info):
+            found = info
+            updateMessage = nil
+        case .failed(let message, let quiet):
+            found = nil
+            if manual || !quiet { updateMessage = message }
+        }
         update = found
-        if manual { updateMessage = found == nil ? (Updater.sourceDir == nil ? "개발 빌드 — 소스 폴더를 모릅니다" : "최신입니다") : nil }
         guard let found, notifies,
               UserDefaults.standard.string(forKey: Self.notifiedUpdateKey) != found.remoteHead else { return }
         UserDefaults.standard.set(found.remoteHead, forKey: Self.notifiedUpdateKey)
@@ -418,8 +447,12 @@ final class SystemMonitor: ObservableObject {
     }
 
     // 스냅샷 전용
-    func readActivityNow() {
-        activities = ActivityReader.read()
+    // failing: Orca 응답 없음 표시 확인용 (10분 전 값으로 둔다)
+    func readActivityNow(failing: Bool = false) {
+        let read = ActivityReader.read()
+        activities = read ?? [:]
+        orcaFailing = failing || read == nil
+        activityReadAt = Date().addingTimeInterval(orcaFailing ? -600 : 0)
     }
 
     // 스냅샷 전용: Orca 세션 둘째 줄을 입력 대기로 바꿔 모양 확인
@@ -463,7 +496,9 @@ final class SystemMonitor: ObservableObject {
         if let lastNotified, Date().timeIntervalSince(lastNotified) < 15 * 60 { return }
         lastNotified = Date()
         var body = reasons.joined(separator: "\n")
-        if let heaviest = sessions.first {
+        if let candidate = CleanupAdvisor.candidates(sessions, activities: activities, limit: 1).first {
+            body += "\n정리 후보(쉬는 세션): \(candidate.session.project) \(Format.bytes(candidate.session.total))"
+        } else if let heaviest = sessions.first {
             body += "\n가장 큰 에이전트: \(heaviest.project) \(Format.bytes(heaviest.total))"
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { Self.post(title: "SysPulse — 메모리 여유 부족", body: body) }

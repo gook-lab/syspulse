@@ -5,6 +5,7 @@ enum Entry {
     @MainActor static func main() {
         // --snapshot <png> [--tab apps]: 팝오버 화면을 이미지로 저장하고 끝낸다 (화면 녹화 권한 없이 UI 확인용)
         let args = CommandLine.arguments
+        if args.contains("--self-test") { exit(SelfTest.run()) }
         if let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count {
             let tab = args.firstIndex(of: "--tab").flatMap { $0 + 1 < args.count ? ListTab(rawValue: args[$0 + 1]) : nil }
             let width = args.firstIndex(of: "--width").flatMap { $0 + 1 < args.count ? Double(args[$0 + 1]) : nil }
@@ -210,7 +211,7 @@ enum Snapshot {
             monitor.sample()
         }
         monitor.readUsageNow()
-        monitor.readActivityNow()
+        monitor.readActivityNow(failing: CommandLine.arguments.contains("--orca-failing"))
         if tab == .worktrees { monitor.scanWorktreesNow() }
         if CommandLine.arguments.contains("--preview-update") { monitor.previewUpdate() }
         // --copy-worktrees <파일>: 「목록 복사」와 같은 내용을 파일로 (개발 확인용)
@@ -236,7 +237,10 @@ enum Snapshot {
                     .foregroundStyle(light ? Color.black : Color.white)
             }
             .padding(.horizontal, 16).padding(.top, 12)
-            DetailView(monitor: monitor, tabOverride: tab, previewConfirmFirstApp: confirmFirst, previewWidth: width)
+            DetailView(monitor: monitor, tabOverride: tab, previewConfirmFirstApp: confirmFirst, previewWidth: width,
+                       maxHeight: CommandLine.arguments.firstIndex(of: "--max-height")
+                           .flatMap { $0 + 1 < CommandLine.arguments.count ? Double(CommandLine.arguments[$0 + 1]) : nil }
+                           .map { CGFloat($0) } ?? .infinity)
         }
         .background(light ? Color(white: 0.96) : Color(red: 0.15, green: 0.15, blue: 0.16))
         .environment(\.colorScheme, light ? .light : .dark)

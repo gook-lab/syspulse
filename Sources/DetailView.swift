@@ -28,22 +28,30 @@ enum SortKey: String {
 struct DetailView: View {
     static let popoverWidth: CGFloat = 340
     static let twoColumnWidth: CGFloat = 640 // 이보다 넓으면 왼쪽 시스템 · 오른쪽 목록 두 열
+    @MainActor static var screenLimit: CGFloat { (NSScreen.main?.visibleFrame.height ?? 900) - 40 }
 
     @ObservedObject var monitor: SystemMonitor
     var mode: DetailMode = .popover
     var tabOverride: ListTab?
     var previewConfirmFirstApp = false // 스냅샷 전용: 종료 확인 상태 줄을 하나 그린다
     var previewWidth: CGFloat? // 스냅샷 전용: 고정 창 폭 흉내
+    var maxHeight: CGFloat? // 팝오버 최대 높이. 없으면 화면 높이 — 넘치면 안쪽을 스크롤한다. .infinity = 스크롤 없이(스냅샷)
     @AppStorage("listTab") private var storedTab = ListTab.agents.rawValue
     @AppStorage("sortKey") private var storedSort = SortKey.memory.rawValue
+    @AppStorage("collapsed.list") private var listCollapsed = false
 
     private var tab: ListTab { tabOverride ?? ListTab(rawValue: storedTab) ?? .agents }
     private var sort: SortKey { SortKey(rawValue: storedSort) ?? .memory }
 
     var body: some View {
         switch mode {
+        case .popover where previewWidth != nil || maxHeight == .infinity:
+            layout(width: previewWidth ?? Self.popoverWidth) // 스냅샷: ImageRenderer 는 ScrollView 안을 그리지 못한다
         case .popover:
-            layout(width: previewWidth ?? Self.popoverWidth)
+            // 내용이 화면보다 길면 팝오버가 화면 밖으로 잘리므로, 화면 높이에서 멈추고 안을 스크롤한다
+            ScrollView(.vertical) { layout(width: Self.popoverWidth) }
+                .frame(maxHeight: maxHeight ?? Self.screenLimit)
+                .fixedSize(horizontal: false, vertical: true)
         case .pinned:
             GeometryReader { geo in
                 ScrollView { layout(width: geo.size.width) }
@@ -77,7 +85,7 @@ struct DetailView: View {
     private var systemColumn: some View {
         HeaderView(monitor: monitor, mode: mode)
         if monitor.update != nil || monitor.updating { UpdateBanner(monitor: monitor) }
-        if !monitor.alerts.isEmpty { AlertBanner(reasons: monitor.alerts) }
+        if !monitor.alerts.isEmpty { AlertBanner(monitor: monitor, mode: mode) }
         Separator()
         CPUSection(monitor: monitor)
         Separator()
@@ -88,16 +96,25 @@ struct DetailView: View {
 
     @ViewBuilder
     private var listColumn: some View {
-        TabPicker(selection: tab, showsSort: tab != .worktrees && tab != .ports, portCount: monitor.ports.count, agentCount: monitor.sessions.count, waitingCount: monitor.waitingCount,
-                  strayCount: monitor.strays.count, worktreeCount: monitor.worktrees.count,
-                  sort: sort, onSelect: { storedTab = $0.rawValue },
-                  onToggleSort: { storedSort = (sort == .memory ? SortKey.cpu : .memory).rawValue })
-        switch tab {
-        case .agents: AgentsSection(monitor: monitor, sort: sort, mode: mode)
-        case .strays: StraysSection(monitor: monitor, sort: sort)
-        case .apps: AppsSection(monitor: monitor, sort: sort, previewConfirmFirst: previewConfirmFirstApp)
-        case .worktrees: WorktreesSection(monitor: monitor)
-        case .ports: PortsSection(monitor: monitor, mode: mode)
+        // 목록도 접을 수 있다 — 탭을 누르면 다시 펼친다
+        HStack(alignment: .center, spacing: 6) {
+            Button { listCollapsed.toggle() } label: { Chevron(collapsed: listCollapsed) }
+                .buttonStyle(HeaderButtonStyle())
+                .help(listCollapsed ? "목록 펼치기" : "목록 접기")
+            TabPicker(selection: tab, showsSort: !listCollapsed && tab != .worktrees && tab != .ports,
+                      portCount: monitor.ports.count, agentCount: monitor.sessions.count, waitingCount: monitor.waitingCount,
+                      strayCount: monitor.strays.count, worktreeCount: monitor.worktrees.count,
+                      sort: sort, onSelect: { storedTab = $0.rawValue; listCollapsed = false },
+                      onToggleSort: { storedSort = (sort == .memory ? SortKey.cpu : .memory).rawValue })
+        }
+        if !listCollapsed {
+            switch tab {
+            case .agents: AgentsSection(monitor: monitor, sort: sort, mode: mode)
+            case .strays: StraysSection(monitor: monitor, sort: sort)
+            case .apps: AppsSection(monitor: monitor, sort: sort, previewConfirmFirst: previewConfirmFirstApp)
+            case .worktrees: WorktreesSection(monitor: monitor)
+            case .ports: PortsSection(monitor: monitor, mode: mode)
+            }
         }
         Separator()
         SettingsRow(monitor: monitor)
@@ -168,16 +185,29 @@ private struct UpdateBanner: View {
     }
 }
 
+// 여유 부족 경고 + 정리 후보(쉬는 세션 큰 순, 누르면 그 세션으로) + 세션 밖 프로세스 합계
 private struct AlertBanner: View {
-    let reasons: [String]
+    @ObservedObject var monitor: SystemMonitor
+    let mode: DetailMode
+
+    private var strayTotal: UInt64 { monitor.strays.reduce(0) { $0 + $1.footprint } }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 3) {
                 Text("여유 부족 — 에이전트를 더 띄우기 전에 정리하세요").font(.caption.weight(.semibold))
-                ForEach(reasons, id: \.self) { reason in
+                ForEach(monitor.alerts, id: \.self) { reason in
                     Text(reason).font(.caption).foregroundStyle(.secondary)
+                }
+                let candidates = CleanupAdvisor.candidates(monitor.sessions, activities: monitor.activities)
+                if !candidates.isEmpty {
+                    Text("정리 후보 — 쉬는 세션, 누르면 그 탭으로").font(.caption.weight(.semibold)).padding(.top, 4)
+                    ForEach(candidates) { candidate in CandidateRow(candidate: candidate, mode: mode) }
+                }
+                if strayTotal >= 200 * 1_048_576 {
+                    Text("세션 밖 프로세스 \(monitor.strays.count)개 \(Format.bytes(strayTotal)) — 「세션 밖」 탭에서 종료")
+                        .font(.caption).foregroundStyle(.secondary).padding(.top, 2)
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -185,6 +215,34 @@ private struct AlertBanner: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.15)))
+    }
+}
+
+private struct CandidateRow: View {
+    let candidate: CleanupCandidate
+    let mode: DetailMode
+    @State private var hovering = false
+
+    private var idle: String {
+        guard let since = candidate.idleSince else { return "쉬는 중" }
+        let lasting = Format.lasting(since: since)
+        return lasting == "방금" ? "방금 멈춤" : lasting + " 쉼"
+    }
+
+    var body: some View {
+        Button {
+            SessionJump.jump(to: candidate.session)
+            if mode == .popover { WindowController.shared.closeMenuBarPopover() }
+        } label: {
+            HStack(spacing: 6) {
+                Text(candidate.session.project).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 4)
+                Text("\(Format.bytes(candidate.session.total)) · \(idle)").foregroundStyle(.secondary).monospacedDigit()
+            }
+            .font(.caption)
+        }
+        .buttonStyle(RowButtonStyle(hovering: hovering))
+        .onHover { hovering = $0 }
     }
 }
 
@@ -493,26 +551,29 @@ private struct TabPicker: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 4) { buttons(compact: false); Spacer(minLength: 4); sortButton }
-            HStack(spacing: 2) { buttons(compact: true); Spacer(minLength: 2); sortButton }
+            HStack(spacing: 4) { buttons(compact: false); Spacer(minLength: 4); sortButton(iconOnly: false) }
+            HStack(spacing: 2) { buttons(compact: true); Spacer(minLength: 2); sortButton(iconOnly: false) }
+            HStack(spacing: 2) { buttons(compact: true); Spacer(minLength: 2); sortButton(iconOnly: true) }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 2) { buttons(compact: true) }
-                sortButton
+                sortButton(iconOnly: false)
             }
         }
     }
 
     @ViewBuilder
-    private var sortButton: some View {
-        if showsSort { sortToggle }
-    }
-
-    private var sortToggle: some View {
-        Button(action: onToggleSort) {
-            Label(sort == .memory ? "메모리순" : "CPU순", systemImage: "arrow.up.arrow.down")
+    private func sortButton(iconOnly: Bool) -> some View {
+        if showsSort {
+            Button(action: onToggleSort) {
+                if iconOnly {
+                    Image(systemName: sort == .memory ? "memorychip" : "cpu")
+                } else {
+                    Label(sort == .memory ? "메모리순" : "CPU순", systemImage: "arrow.up.arrow.down")
+                }
+            }
+            .buttonStyle(TabButtonStyle(selected: false, compact: true))
+            .help(sort == .memory ? "메모리순 — 누르면 CPU순" : "CPU순 — 누르면 메모리순")
         }
-        .buttonStyle(TabButtonStyle(selected: false, compact: true))
-        .help("메모리순 ↔ CPU순")
     }
 
     @ViewBuilder
@@ -554,6 +615,10 @@ private struct AgentsSection: View {
             } else {
                 summaryText.font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     .fixedSize(horizontal: false, vertical: true)
+                if monitor.orcaFailing {
+                    Text("⚠︎ Orca 응답 없음 — 입력 대기 표시·알림은 " + (monitor.activityReadAt.map(Format.ago) ?? "아직 못 읽은 값"))
+                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
                 ForEach(sessions.prefix(8)) { session in
                     SessionRow(session: session, activity: activity(of: session), mode: mode)
                 }
@@ -1066,6 +1131,12 @@ private struct SettingsRow: View {
 private struct FooterView: View {
     @ObservedObject var monitor: SystemMonitor
 
+    // 다시 설치해야 하는 상태나 실패는 빨갛게
+    private var updateProblem: Bool {
+        guard let message = monitor.updateMessage else { return false }
+        return message.hasPrefix("업데이트 실패") || message.contains(Updater.reinstallHint) || message.hasPrefix("git fetch 실패")
+    }
+
     var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
@@ -1090,7 +1161,7 @@ private struct FooterView: View {
             // 버전을 누르면 바로 업데이트 확인
             Button { monitor.checkUpdate(manual: true) } label: {
                 Text("v\(Updater.version) · \(Updater.shortCommit)" + (monitor.updateMessage.map { " — " + $0 } ?? ""))
-                    .foregroundStyle(monitor.updateMessage?.hasPrefix("업데이트 실패") == true ? .red : .secondary)
+                    .foregroundStyle(updateProblem ? .red : .secondary)
             }
             .buttonStyle(.plain)
             .help("눌러서 업데이트 확인")
@@ -1130,10 +1201,7 @@ private struct CollapsibleSection<Header: View, Content: View>: View {
         VStack(alignment: .leading, spacing: spacing) {
             Button { collapsed.toggle() } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(collapsed ? 0 : 90))
-                        .frame(width: 10)
+                    Chevron(collapsed: collapsed)
                     header(collapsed)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1143,6 +1211,17 @@ private struct CollapsibleSection<Header: View, Content: View>: View {
             .help(collapsed ? "펼치기" : "접기")
             if !collapsed { content }
         }
+    }
+}
+
+private struct Chevron: View {
+    let collapsed: Bool
+
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+            .rotationEffect(.degrees(collapsed ? 0 : 90))
+            .frame(width: 10)
     }
 }
 

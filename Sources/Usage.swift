@@ -74,7 +74,11 @@ enum UsageReader {
     ]
 
     static func orca() -> [AgentUsage] {
-        guard let limits = Orca.result(["account", "list", "--json"])?["rateLimits"] as? [String: Any] else { return [] }
+        Orca.result(["account", "list", "--json"]).map(parseOrca) ?? []
+    }
+
+    static func parseOrca(_ result: [String: Any]) -> [AgentUsage] {
+        guard let limits = result["rateLimits"] as? [String: Any] else { return [] }
         return limits.compactMap { key, value -> AgentUsage? in
             guard let provider = value as? [String: Any], provider["status"] as? String == "ok" else { return nil }
             let windows = orcaWindows(provider)
@@ -218,11 +222,23 @@ enum UsageReader {
 
 // Orca CLI — 앱 번들 안의 orca 스크립트. JSON 응답의 result 만 돌려준다.
 enum Orca {
-    static let cli: String? = {
+    // 앱을 켠 뒤 Orca 를 설치하거나 옮겨도 잡히게, 못 찾으면 1분 뒤 다시 찾는다 (여러 큐에서 부르므로 잠근다)
+    private static let lock = NSLock()
+    private static var cached: String?
+    private static var lastLookup = Date.distantPast
+
+    static var cli: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached, FileManager.default.isExecutableFile(atPath: cached) { return cached }
+        cached = nil
+        guard Date().timeIntervalSince(lastLookup) >= 60 else { return nil }
+        lastLookup = Date()
         let bundled = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.stablyai.orca")?
             .appendingPathComponent("Contents/Resources/bin/orca").path
-        return bundled.flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil }
-    }()
+        cached = bundled.flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil }
+        return cached
+    }
 
     static func result(_ arguments: [String]) -> [String: Any]? {
         guard let cli, let data = CLI.run(cli, arguments, timeout: 4),

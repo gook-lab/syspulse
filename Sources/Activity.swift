@@ -25,9 +25,14 @@ struct AgentActivity: Sendable {
 }
 
 enum ActivityReader {
-    static func read() -> [String: AgentActivity] {
-        guard let worktrees = Orca.result(["worktree", "ps", "--agent-wait", "--json"])?["worktrees"] as? [[String: Any]]
-        else { return [:] }
+    // nil = Orca 는 있는데 읽지 못함(응답 없음 · 형식 바뀜). Orca 가 없으면 빈 목록.
+    static func read() -> [String: AgentActivity]? {
+        guard Orca.cli != nil else { return [:] }
+        return Orca.result(["worktree", "ps", "--agent-wait", "--json"]).flatMap(parse)
+    }
+
+    static func parse(_ result: [String: Any]) -> [String: AgentActivity]? {
+        guard let worktrees = result["worktrees"] as? [[String: Any]] else { return nil }
         var activities: [String: AgentActivity] = [:]
         for worktree in worktrees {
             let name = [worktree["repo"] as? String, worktree["displayName"] as? String]
@@ -68,5 +73,32 @@ enum ActivityReader {
         case "agent-hooks-review-prompt": return "훅 검토 대기"
         default: return "응답 대기 (\(reason))"
         }
+    }
+}
+
+// 메모리가 모자랄 때 띄울 정리 후보 — 지금 일하지 않는 세션을 메모리 큰 순으로.
+// Orca 세션은 Orca 가 「턴 마침」으로 본 것, Orca 밖 세션은 에이전트 프로세스 CPU 가 1% 미만인 것.
+// 입력 대기 세션은 사람 답을 기다리는 중이라 뺀다.
+struct CleanupCandidate: Identifiable {
+    let session: AgentSession
+    let idleSince: Date? // Orca 가 알려 준 쉬기 시작한 시각
+
+    var id: String { session.key }
+}
+
+enum CleanupAdvisor {
+    static func candidates(_ sessions: [AgentSession], activities: [String: AgentActivity],
+                           limit: Int = 3) -> [CleanupCandidate] {
+        let idle = sessions.compactMap { session -> CleanupCandidate? in
+            guard let activity = session.paneKey.flatMap({ activities[$0] }) else {
+                return session.agentCPU < 0.01 ? CleanupCandidate(session: session, idleSince: nil) : nil
+            }
+            switch activity.state {
+            case .done: return CleanupCandidate(session: session, idleSince: activity.since)
+            case .other: return session.agentCPU < 0.01 ? CleanupCandidate(session: session, idleSince: nil) : nil
+            case .working, .waiting: return nil
+            }
+        }
+        return Array(idle.sorted { $0.session.total > $1.session.total }.prefix(limit))
     }
 }

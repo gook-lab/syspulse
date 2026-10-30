@@ -28,6 +28,10 @@ COUNT=$(git rev-list --count HEAD 2>/dev/null || echo 0)
 mkdir -p "$APP/Contents/Resources"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/" # 다시 그리려면 scripts/make-icon.swift
 codesign --force --sign - "$APP" >/dev/null
+# 판정 규칙 확인 (Sources/SelfTest.swift). 실패하면 설치하지 않는다
+if lipo -archs "$APP/Contents/MacOS/SysPulse" | grep -qw "$(uname -m)"; then
+  "$APP/Contents/MacOS/SysPulse" --self-test
+fi
 echo "built $APP ($(lipo -archs "$APP/Contents/MacOS/SysPulse"))"
 
 if [[ "${1:-}" == "install" ]]; then
