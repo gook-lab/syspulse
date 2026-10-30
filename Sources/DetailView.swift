@@ -63,7 +63,7 @@ struct DetailView: View {
     private func layout(width: CGFloat) -> some View {
         if width >= Self.twoColumnWidth {
             HStack(alignment: .top, spacing: 24) {
-                VStack(alignment: .leading, spacing: 14) { systemColumn }
+                VStack(alignment: .leading, spacing: 14) { systemColumn(width: (width - 56) / 2) }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 VStack(alignment: .leading, spacing: 14) { listColumn }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -72,7 +72,7 @@ struct DetailView: View {
             .frame(width: width)
         } else {
             VStack(alignment: .leading, spacing: 14) {
-                systemColumn
+                systemColumn(width: width - 32)
                 Separator()
                 listColumn
             }
@@ -82,12 +82,15 @@ struct DetailView: View {
     }
 
     @ViewBuilder
-    private var systemColumn: some View {
-        HeaderView(monitor: monitor, mode: mode)
+    private func systemColumn(width: CGFloat) -> some View {
+        HeaderView(monitor: monitor, mode: mode, narrow: width < 300)
         if monitor.update != nil || monitor.updating {
             UpdateBanner(monitor: monitor)
         } else if let message = monitor.updateMessage {
             Text(message).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        }
+        if let error = monitor.loginError {
+            Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
         }
         if !monitor.alerts.isEmpty { AlertBanner(monitor: monitor, mode: mode) }
         Separator()
@@ -122,9 +125,6 @@ struct DetailView: View {
                 }
             }
         }
-        Separator()
-        SettingsRow(monitor: monitor)
-        FooterView(monitor: monitor)
     }
 }
 
@@ -133,24 +133,53 @@ struct DetailView: View {
 private struct HeaderView: View {
     @ObservedObject var monitor: SystemMonitor
     let mode: DetailMode
+    let narrow: Bool // 폭이 좁으면 버튼 줄을 제목 아래로 내린다 (제목이 한 글자씩 눌리지 않게)
 
     var body: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(monitor.hardware.chip).font(.headline)
-                Text([monitor.hardware.coreSummary, "메모리 \(Format.capacity(monitor.hardware.totalMemory))",
-                      monitor.hardware.osVersion].joined(separator: " · "))
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        if narrow {
+            VStack(alignment: .leading, spacing: 8) {
+                title
+                HStack(spacing: 6) { controls }
             }
-            Spacer(minLength: 8)
-            UpdateChip(monitor: monitor)
-            Button { WindowController.shared.togglePinned() } label: {
-                Image(systemName: mode == .pinned ? "pin.fill" : "pin")
+        } else {
+            HStack(alignment: .top) {
+                title
+                Spacer(minLength: 8)
+                controls
             }
-            .buttonStyle(IconButtonStyle(active: mode == .pinned))
-            .help(mode == .pinned ? "고정 해제" : "화면에 고정 — 항상 위에 뜨는 창으로")
         }
+    }
+
+    private var title: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(monitor.hardware.chip).font(.headline)
+            Text([monitor.hardware.coreSummary, "메모리 \(Format.capacity(monitor.hardware.totalMemory))",
+                  monitor.hardware.osVersion].joined(separator: " · "))
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            uptimeLine.font(.caption)
+        }
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        UpdateChip(monitor: monitor)
+        Button { WindowController.shared.togglePinned() } label: {
+            Image(systemName: mode == .pinned ? "pin.fill" : "pin")
+        }
+        .buttonStyle(IconButtonStyle(active: mode == .pinned))
+        .help(mode == .pinned ? "고정 해제" : "화면에 고정 — 항상 위에 뜨는 창으로")
+        Button { SettingsMenu.show(monitor) } label: { Image(systemName: "gearshape") }
+            .buttonStyle(IconButtonStyle(active: false))
+            .help("알림 기준 · 입력 대기 알림 · 로그인 시 실행 · 활성 상태 보기 · 종료")
+    }
+
+    // 「부팅 후 1일 5시간 · 열 정상」 — 열이 정상이 아니면 주황
+    private var uptimeLine: Text {
+        let thermal = ProcessInfo.processInfo.thermalState
+        let boot = monitor.bootDate.map { Text("부팅 후 \(Format.uptime(since: $0)) · ").foregroundColor(.secondary) } ?? Text("")
+        let heat = Text("열 \(Format.thermal(thermal))").foregroundColor(thermal == .nominal ? .secondary : .orange)
+        return boot + heat
     }
 }
 
@@ -1154,91 +1183,49 @@ private struct AppRow: View {
     }
 }
 
-// MARK: - 설정 · 꼬리
+// MARK: - 설정 메뉴
 
-private struct SettingsRow: View {
-    @ObservedObject var monitor: SystemMonitor
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 5) {
-                    threshold
-                    Spacer(minLength: 6)
-                    waitingButton
-                    loginButton
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 5) { threshold }
-                    HStack(spacing: 5) { waitingButton; loginButton }
-                }
+// 머리 줄 ⚙︎ — 알림 기준 · 입력 대기 알림 · 로그인 시 실행 · 활성 상태 보기 · 종료.
+// SwiftUI Menu 는 모양을 다른 원형 버튼과 맞추기 어렵고 스냅샷에도 자리표시자로 찍혀, 버튼을 누르면 NSMenu 를 띄운다.
+@MainActor
+private enum SettingsMenu {
+    static func show(_ monitor: SystemMonitor) {
+        let menu = NSMenu()
+        let threshold = NSMenuItem(title: "여유 부족 알림: 가용 \(monitor.alertThresholdGB) GB 미만", action: nil, keyEquivalent: "")
+        let choices = NSMenu()
+        for gb in Set([2, 3, 4, 6, 8, 12, 16, monitor.alertThresholdGB]).sorted() {
+            let item = ActionItem("가용 \(gb) GB 미만", on: gb == monitor.alertThresholdGB) {
+                monitor.adjustThreshold(by: gb - monitor.alertThresholdGB)
             }
-            if let error = monitor.loginError {
-                Text(error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
-            }
+            choices.addItem(item)
         }
-        .font(.caption)
-    }
-
-    @ViewBuilder
-    private var threshold: some View {
-        Text("알림: 가용").foregroundStyle(.secondary)
-        Button("−") { monitor.adjustThreshold(by: -1) }.buttonStyle(PillButtonStyle())
-        Text("\(monitor.alertThresholdGB) GB").monospacedDigit()
-        Button("+") { monitor.adjustThreshold(by: 1) }.buttonStyle(PillButtonStyle())
-        Text("미만").foregroundStyle(.secondary)
-    }
-
-    private var waitingButton: some View {
-        Button(monitor.notifyWaiting ? "대기 알림 ✓" : "대기 알림") { monitor.toggleNotifyWaiting() }
-            .buttonStyle(PillButtonStyle(tint: monitor.notifyWaiting ? .green : nil))
-            .help("Orca 에이전트가 승인·질문에 멈추면 알림")
-    }
-
-    private var loginButton: some View {
-        Button(monitor.launchAtLogin ? "로그인 시 실행 ✓" : "로그인 시 실행") {
-            monitor.toggleLaunchAtLogin()
-        }
-        .buttonStyle(PillButtonStyle(tint: monitor.launchAtLogin ? .green : nil))
+        threshold.submenu = choices
+        menu.addItem(threshold)
+        menu.addItem(ActionItem("입력 대기 알림", on: monitor.notifyWaiting) { monitor.toggleNotifyWaiting() })
+        menu.addItem(ActionItem("로그인 시 실행", on: monitor.launchAtLogin) { monitor.toggleLaunchAtLogin() })
+        menu.addItem(.separator())
+        menu.addItem(ActionItem("활성 상태 보기") {
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
+        })
+        menu.addItem(.separator())
+        menu.addItem(ActionItem("SysPulse 종료", key: "q") { NSApplication.shared.terminate(nil) })
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 }
 
-private struct FooterView: View {
-    @ObservedObject var monitor: SystemMonitor
+private final class ActionItem: NSMenuItem {
+    private let handler: () -> Void
 
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) {
-                status
-                Spacer()
-                buttons
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                status
-                HStack(spacing: 8) { buttons }
-            }
-        }
-        .buttonStyle(PillButtonStyle())
+    init(_ title: String, on: Bool? = nil, key: String = "", handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(fire), keyEquivalent: key)
+        target = self
+        if let on { state = on ? .on : .off }
     }
 
-    private var status: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            if let boot = monitor.bootDate {
-                Text("부팅 후 \(Format.uptime(since: boot))")
-            }
-            Text("열 상태 \(Format.thermal(ProcessInfo.processInfo.thermalState))")
-        }
-        .font(.caption).foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-    }
+    required init(coder: NSCoder) { fatalError("init(coder:) 미지원") }
 
-    @ViewBuilder
-    private var buttons: some View {
-        Button("활성 상태 보기") {
-            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
-        }
-        Button("종료") { NSApplication.shared.terminate(nil) }
-    }
+    @objc private func fire() { handler() }
 }
 
 // MARK: - 작은 부품
