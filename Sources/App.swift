@@ -249,6 +249,7 @@ enum Snapshot {
         }
         .background(light ? Color(white: 0.96) : Color(red: 0.15, green: 0.15, blue: 0.16))
         .environment(\.colorScheme, light ? .light : .dark)
+        .environment(\.isSnapshot, true)
 
         let renderer = ImageRenderer(content: content)
         renderer.scale = 2

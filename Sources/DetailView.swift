@@ -112,12 +112,14 @@ struct DetailView: View {
                       onToggleSort: { storedSort = (sort == .memory ? SortKey.cpu : .memory).rawValue })
         }
         if !listCollapsed {
-            switch tab {
-            case .agents: AgentsSection(monitor: monitor, sort: sort, mode: mode)
-            case .strays: StraysSection(monitor: monitor, sort: sort)
-            case .apps: AppsSection(monitor: monitor, sort: sort, previewConfirmFirst: previewConfirmFirstApp)
-            case .worktrees: WorktreesSection(monitor: monitor)
-            case .ports: PortsSection(monitor: monitor, mode: mode)
+            ListArea(mode: mode) {
+                switch tab {
+                case .agents: AgentsSection(monitor: monitor, sort: sort, mode: mode)
+                case .strays: StraysSection(monitor: monitor, sort: sort)
+                case .apps: AppsSection(monitor: monitor, sort: sort, previewConfirmFirst: previewConfirmFirstApp)
+                case .worktrees: WorktreesSection(monitor: monitor)
+                case .ports: PortsSection(monitor: monitor, mode: mode)
+                }
             }
         }
         Separator()
@@ -597,6 +599,7 @@ private struct TabPicker: View {
             HStack(spacing: 4) { buttons(compact: false); Spacer(minLength: 4); sortButton(iconOnly: false) }
             HStack(spacing: 2) { buttons(compact: true); Spacer(minLength: 2); sortButton(iconOnly: false) }
             HStack(spacing: 2) { buttons(compact: true); Spacer(minLength: 2); sortButton(iconOnly: true) }
+            HStack(spacing: 0) { buttons(compact: true, tight: true); Spacer(minLength: 2); sortButton(iconOnly: true) }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 2) { buttons(compact: true) }
                 sortButton(iconOnly: false)
@@ -620,18 +623,18 @@ private struct TabPicker: View {
     }
 
     @ViewBuilder
-    private func buttons(compact: Bool) -> some View {
+    private func buttons(compact: Bool, tight: Bool = false) -> some View {
         tabButton(.agents, title: (agentCount > 0 ? "에이전트 \(agentCount)" : "에이전트")
-                  + (waitingCount > 0 ? " · 대기 \(waitingCount)" : ""), compact: compact)
-        tabButton(.strays, title: strayCount > 0 ? "세션 밖 \(strayCount)" : "세션 밖", compact: compact)
-        tabButton(.apps, title: "앱", compact: compact)
-        tabButton(.worktrees, title: worktreeCount > 0 ? "워크트리 \(worktreeCount)" : "워크트리", compact: compact)
-        tabButton(.ports, title: portCount > 0 ? "포트 \(portCount)" : "포트", compact: compact)
+                  + (waitingCount > 0 ? " · 대기 \(waitingCount)" : ""), compact: compact, tight: tight)
+        tabButton(.strays, title: strayCount > 0 ? "세션 밖 \(strayCount)" : "세션 밖", compact: compact, tight: tight)
+        tabButton(.apps, title: "앱", compact: compact, tight: tight)
+        tabButton(.worktrees, title: worktreeCount > 0 ? "워크트리 \(worktreeCount)" : "워크트리", compact: compact, tight: tight)
+        tabButton(.ports, title: portCount > 0 ? "포트 \(portCount)" : "포트", compact: compact, tight: tight)
     }
 
-    private func tabButton(_ tab: ListTab, title: String, compact: Bool) -> some View {
+    private func tabButton(_ tab: ListTab, title: String, compact: Bool, tight: Bool = false) -> some View {
         Button(title) { onSelect(tab) }
-            .buttonStyle(TabButtonStyle(selected: selection == tab, compact: compact))
+            .buttonStyle(TabButtonStyle(selected: selection == tab, compact: compact, tight: tight))
     }
 }
 
@@ -662,11 +665,8 @@ private struct AgentsSection: View {
                     Text("⚠︎ Orca 응답 없음 — 입력 대기 표시·알림은 " + (monitor.activityReadAt.map(Format.ago) ?? "아직 못 읽은 값"))
                         .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
-                ForEach(sessions.prefix(8)) { session in
+                ForEach(sessions) { session in
                     SessionRow(session: session, activity: activity(of: session), mode: mode)
-                }
-                if monitor.sessions.count > 8 {
-                    Text("외 \(monitor.sessions.count - 8)개").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -696,11 +696,8 @@ private struct PortsSection: View {
             if monitor.ports.isEmpty {
                 Text("앱 밖 프로세스가 연 포트가 없습니다").font(.callout).foregroundStyle(.secondary)
             } else {
-                ForEach(monitor.ports.prefix(14)) { port in
+                ForEach(monitor.ports) { port in
                     PortRow(port: port, shared: monitor.ports.filter { $0.port == port.port }.count > 1, mode: mode, monitor: monitor)
-                }
-                if monitor.ports.count > 14 {
-                    Text("외 \(monitor.ports.count - 14)개").font(.caption).foregroundStyle(.secondary)
                 }
             }
             Text("앱(.app) 밖에서 도는 node·python 등의 TCP LISTEN 포트입니다. 같은 포트를 둘 이상이 열고 있으면 주황으로 표시합니다.")
@@ -808,10 +805,7 @@ private struct WorktreesSection: View {
                         .help("Markdown 표로 복사 — Claude 에 붙여 검토를 맡길 수 있습니다")
                 }
             }
-            ForEach(rows.prefix(12)) { worktree in WorktreeRow(worktree: worktree, monitor: monitor) }
-            if rows.count > 12 {
-                Text("외 \(rows.count - 12)개").font(.caption).foregroundStyle(.secondary)
-            }
+            ForEach(rows) { worktree in WorktreeRow(worktree: worktree, monitor: monitor) }
             Text("「정리」는 git worktree remove 입니다 — 브랜치와 커밋은 그대로 남고, 변경이 있으면 git 이 거절합니다. git 이 무시하는 파일(node_modules · .env.local 등)은 폴더와 함께 지워집니다.")
                 .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
         }
@@ -906,7 +900,7 @@ private struct StraysSection: View {
             if monitor.strays.isEmpty {
                 Text("모든 dev 프로세스가 에이전트 세션에 연결돼 있습니다").font(.callout).foregroundStyle(.secondary)
             } else {
-                ForEach(strays.prefix(8)) { stray in StrayRow(stray: stray, monitor: monitor) }
+                ForEach(strays) { stray in StrayRow(stray: stray, monitor: monitor) }
             }
             Text("부모 에이전트도, 작업 폴더가 겹치는 세션도 찾지 못한 node·python 등입니다. 끝난 세션이 남긴 dev 서버일 수 있지만, 직접 띄운 서비스일 수도 있습니다.")
                 .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
@@ -1031,7 +1025,7 @@ private struct AppsSection: View {
     var previewConfirmFirst = false
 
     private var rows: [ProcessRow] {
-        Array((sort == .cpu ? monitor.apps.sorted { $0.cpu > $1.cpu } : monitor.apps).prefix(8))
+        sort == .cpu ? monitor.apps.sorted { $0.cpu > $1.cpu } : monitor.apps
     }
 
     var body: some View {
@@ -1248,6 +1242,44 @@ private struct FooterView: View {
 }
 
 // MARK: - 작은 부품
+
+// 목록 탭 내용 — 팝오버에서는 높이를 고정하고 안을 스크롤한다. 탭을 바꿔도 팝오버 크기가 그대로이고,
+// 「외 N개」로 자르지 않고 전부 볼 수 있다. 고정 창은 창 전체가 이미 스크롤되므로 그대로 펼친다.
+// 스냅샷(ImageRenderer)은 ScrollView 안을 그리지 못해 같은 높이로 잘라서 그린다.
+private struct ListArea<Content: View>: View {
+    static var height: CGFloat { 360 }
+    let mode: DetailMode
+    @ViewBuilder let content: Content
+    @Environment(\.isSnapshot) private var isSnapshot
+
+    var body: some View {
+        if mode == .pinned {
+            content
+        } else if isSnapshot {
+            inner.frame(height: Self.height, alignment: .top).clipped().padding(.horizontal, -6)
+        } else {
+            ScrollView(.vertical) { inner }.frame(height: Self.height).padding(.horizontal, -6)
+        }
+    }
+
+    // 줄 hover 배경이 양옆으로 6pt 나가 스크롤 가장자리에 잘리지 않게, 스크롤 영역을 6pt 넓히고 안을 6pt 들인다
+    private var inner: some View {
+        VStack(alignment: .leading, spacing: 8) { content }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 6)
+    }
+}
+
+private struct SnapshotKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var isSnapshot: Bool {
+        get { self[SnapshotKey.self] }
+        set { self[SnapshotKey.self] = newValue }
+    }
+}
 
 // 단락 접기 — 머리 줄(제목·핵심 값)은 남기고 아래만 숨긴다. 단락마다 상태를 기억한다(UserDefaults collapsed.<키>).
 // 스냅샷에서는 `-collapsed.cpu YES` 처럼 인자로 접은 상태를 줄 수 있다(NSArgumentDomain).
@@ -1479,12 +1511,13 @@ private struct GlyphButtonStyle: ButtonStyle {
 private struct TabButtonStyle: ButtonStyle {
     let selected: Bool
     var compact = false
+    var tight = false // 탭이 많거나 숫자가 길 때 — 여백만 줄인다
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font((compact ? Font.caption : .subheadline).weight(selected ? .semibold : .regular))
             .foregroundStyle(selected ? .primary : .secondary)
-            .padding(.horizontal, compact ? 7 : 10).padding(.vertical, 4)
+            .padding(.horizontal, tight ? 5 : compact ? 7 : 10).padding(.vertical, 4)
             .background(Capsule().fill(Color.primary.opacity(selected ? 0.14 : configuration.isPressed ? 0.08 : 0)))
             .contentShape(Capsule())
             .fixedSize()
