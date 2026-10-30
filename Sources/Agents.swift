@@ -136,7 +136,7 @@ enum AgentAnalysis {
         String(path.map { $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : "-" })
     }
 
-    // 작업 폴더 → 「sonix_docs · ml-3426」 같은 이름
+    // 작업 폴더 → 「my-app · feature-login」 같은 이름
     static func projectLabel(_ path: String) -> String {
         guard !path.isEmpty else { return "작업 폴더 모름" }
         if path == NSHomeDirectory() { return "~" }

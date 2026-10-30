@@ -314,10 +314,17 @@ private struct UsageRow: View {
         HStack(spacing: 6) {
             ForEach(Array(agent.windows.prefix(extras ? agent.windows.count : 2).enumerated()), id: \.element.id) { index, window in
                 if index > 0 { Text("·").foregroundStyle(.tertiary) }
-                UsageWindowView(window: window, compact: index >= 2)
+                // 앞 창과 초기화 시각이 같으면(Cursor 의 모델 묶음) 남은 시간은 한 번만
+                UsageWindowView(window: window, compact: index >= 2,
+                                showsReset: index == 0 || !sameReset(window, agent.windows[index - 1]))
             }
         }
         .fixedSize()
+    }
+
+    private func sameReset(_ a: UsageWindow, _ b: UsageWindow) -> Bool {
+        guard let x = a.resetsAt, let y = b.resetsAt else { return false }
+        return abs(x.timeIntervalSince(y)) < 60
     }
 
     // 값이 15분 넘게 안 바뀌었으면 언제 값인지 붙인다 (Claude 는 Claude Code 상태 줄이 그려질 때만 갱신된다)
@@ -337,6 +344,7 @@ private struct UsageRow: View {
 private struct UsageWindowView: View {
     let window: UsageWindow
     var compact = false
+    var showsReset = true
 
     var body: some View {
         HStack(spacing: 4) {
@@ -346,7 +354,7 @@ private struct UsageWindowView: View {
             }
             Text("\(Int(window.usedPercent.rounded()))%").monospacedDigit()
                 .foregroundStyle(window.isReset ? Color.secondary : color == Palette.user ? Color.primary : color)
-            if !compact {
+            if !compact && showsReset {
                 Text(resetText).monospacedDigit().foregroundStyle(.secondary)
             }
         }

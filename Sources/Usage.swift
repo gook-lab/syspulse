@@ -97,7 +97,7 @@ enum UsageReader {
         if let buckets = provider["buckets"] as? [[String: Any]], !buckets.isEmpty {
             for bucket in buckets {
                 let name = bucket["name"] as? String ?? "?"
-                let label = name == "Cursor Models" ? "자체 모델" : name == "Other Models" ? "기타 모델" : name
+                let label = name == "Cursor Models" ? "자체" : name == "Other Models" ? "기타" : name
                 windows.append(window("bucket:" + name, label, bucket))
             }
         } else {

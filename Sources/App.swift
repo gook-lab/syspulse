@@ -77,7 +77,8 @@ final class WindowController: NSObject, NSWindowDelegate {
                             backing: .buffered, defer: false)
         panel.title = "SysPulse"
         panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // stationary: Space 전환·Mission Control 애니메이션에 끌려가지 않고 제자리에 (전환 때 깜빡임 줄임)
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.isMovableByWindowBackground = true
