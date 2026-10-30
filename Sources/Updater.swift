@@ -25,6 +25,9 @@ enum Updater {
     static var shortCommit: String { commit.map { String($0.prefix(7)) } ?? "개발 빌드" }
 
     static let reinstallHint = "INSTALL.md 링크로 다시 설치하세요"
+    static let changelogURL = URL(string: "https://github.com/gook-lab/syspulse/blob/main/CHANGELOG.md")!
+    // 앱에 들어가는 파일이 바뀐 커밋만 센다 — 문서만 고친 커밋으로는 업데이트를 알리지 않는다
+    private static let appPaths = ["--", "Sources", "Resources", "Info.plist", "build.sh"]
 
     static func check() -> UpdateCheck {
         guard let dir = sourceDir, let commit else { return .failed("개발 빌드 — 소스 폴더를 모릅니다", quiet: true) }
@@ -36,11 +39,11 @@ enum Updater {
         }
         let upstream = text(dir, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]) ?? "origin/main"
         guard let head = text(dir, ["rev-parse", upstream]),
-              let behind = text(dir, ["rev-list", "--count", "\(commit)..\(upstream)"]).flatMap({ Int($0) }) else {
+              let behind = text(dir, ["rev-list", "--count", "\(commit)..\(upstream)"] + appPaths).flatMap({ Int($0) }) else {
             return .failed("설치된 커밋을 소스 폴더에서 찾지 못했습니다 — \(reinstallHint)", quiet: false)
         }
         guard behind > 0 else { return .upToDate }
-        let subjects = text(dir, ["log", "--format=%s", "-3", "\(commit)..\(upstream)"])?
+        let subjects = text(dir, ["log", "--format=%s", "-3", "\(commit)..\(upstream)"] + appPaths)?
             .split(separator: "\n").map(String.init) ?? []
         return .available(UpdateInfo(behind: behind, subjects: subjects, remoteHead: head))
     }

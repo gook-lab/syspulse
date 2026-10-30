@@ -4,7 +4,7 @@
 
 ## 설치 — 에이전트에게 링크로
 
-Claude Code·Codex 에게 "https://github.com/gook-lab/syspulse/blob/main/INSTALL.md 보고 SysPulse 설치해줘"라고 하면 됩니다. 절차와 막히는 곳은 [INSTALL.md](INSTALL.md) 에 있습니다.
+Claude Code·Codex 에게 "https://github.com/gook-lab/syspulse/blob/main/INSTALL.md 보고 SysPulse 설치해줘"라고 하면 됩니다. 절차와 막히는 곳은 [INSTALL.md](INSTALL.md), 버전별 변경 내용은 [CHANGELOG.md](CHANGELOG.md) 에 있습니다.
 
 ## 빌드 · 설치 — swiftc 단일 스크립트
 
@@ -99,10 +99,10 @@ Orca 의 터미널은 Orca 앱이 아니라 별도 데몬(`Orca Terminal Host`)�
 
 ## 업데이트 — 소스 폴더 git fetch
 
-`build.sh` 가 빌드할 때 Info.plist 에 버전(`1.<커밋 수>`), 커밋, 소스 폴더를 적어 둡니다. 앱은 켠 뒤 20초, 그다음 30분마다, 그리고 팝오버를 열 때(마지막 확인이 10분 넘었으면) 그 폴더에서 `git fetch` 해 설치된 커밋 뒤로 새 커밋이 있는지 봅니다.
+`build.sh` 가 빌드할 때 Info.plist 에 버전(`1.<커밋 수>`), 커밋, 소스 폴더를 적어 둡니다. 앱은 켠 뒤 20초, 그다음 30분마다, 그리고 팝오버를 열 때(마지막 확인이 10분 넘었으면) 그 폴더에서 `git fetch` 해 설치된 커밋 뒤로 새 커밋이 있는지 봅니다. 앱에 들어가는 파일(`Sources` · `Resources` · `Info.plist` · `build.sh`)이 바뀐 커밋만 세므로, 문서만 고친 커밋으로는 알리지 않습니다.
 
-- 새 커밋이 있으면 머리 줄의 「업데이트 N」과 함께 그 아래 「업데이트가 있습니다 — 새 커밋 N개」 배너와 커밋 제목을 띄우고, 원격 커밋마다 한 번 알림을 보냅니다.
-- 「업데이트」를 누르면 그 폴더에서 `git pull --ff-only && ./build.sh install` 을 돌립니다. 스크립트가 지금 앱을 끄고 새 빌드를 띄웁니다. 실패하면 배너 자리에 이유가 빨갛게 남으며, 전체 기록은 `~/Library/Logs/SysPulse-update.log` 에 있습니다.
+- 새 커밋이 있으면 머리 줄의 「업데이트 N」과 함께 그 아래 「업데이트가 있습니다 — 새 커밋 N개」 배너와 커밋 제목을 띄우고, 원격 커밋마다 한 번 알림을 보냅니다. 배너의 「변경 내용」은 [CHANGELOG.md](CHANGELOG.md) 를 엽니다.
+- 「업데이트」를 누르면 그 폴더에서 `git pull --ff-only && ./build.sh install` 을 돌립니다. 스크립트가 `pkill -a` 로 지금 앱을 끄고 새 빌드를 띄웁니다(`-a` 가 없으면 macOS pkill 은 자기를 띄운 앱을 조상 프로세스라며 건너뜁니다). 그래도 앱이 살아 있으면 새 앱을 띄울 셸을 남기고 스스로 끝납니다. 실패하면 배너 자리에 이유가 빨갛게 남으며, 전체 기록은 `~/Library/Logs/SysPulse-update.log` 에 있습니다.
 - 소스 폴더에 로컬 수정이 있어 fast-forward 가 안 되면 업데이트하지 않습니다.
 - 소스 폴더를 지웠거나 옮겨 업데이트할 수 없으면 자동 확인 때도 머리 줄 아래에 빨갛게 「INSTALL.md 링크로 다시 설치하세요」를 남깁니다. 네트워크처럼 일시적인 실패는 직접 확인할 때만 보여 줍니다.
 - `build.sh` 가 빌드 직후 `--self-test`(worktree 정리 판정, 사용량 페이스·소진 예상, Orca 응답 해석, 정리 후보)를 돌리고 실패하면 설치하지 않으므로, 깨진 판정이 업데이트로 깔리지 않습니다.

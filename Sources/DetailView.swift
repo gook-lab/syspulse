@@ -199,8 +199,8 @@ private struct UpdateBanner: View {
                     }
                 } else if let update = monitor.update {
                     ViewThatFits(in: .horizontal) {
-                        HStack { title(update); Spacer(minLength: 6); button }
-                        VStack(alignment: .leading, spacing: 4) { title(update); button }
+                        HStack { title(update); Spacer(minLength: 6); notes; button }
+                        VStack(alignment: .leading, spacing: 4) { title(update); HStack(spacing: 6) { button; notes } }
                     }
                     ForEach(update.subjects, id: \.self) { subject in
                         Text("· " + subject).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -219,6 +219,12 @@ private struct UpdateBanner: View {
 
     private var button: some View {
         Button("업데이트") { monitor.installUpdate() }.buttonStyle(PillButtonStyle(tint: Palette.user))
+    }
+
+    private var notes: some View {
+        Button("변경 내용") { NSWorkspace.shared.open(Updater.changelogURL) }
+            .buttonStyle(PillButtonStyle())
+            .help("패치노트(CHANGELOG.md)를 브라우저로 엽니다")
     }
 }
 

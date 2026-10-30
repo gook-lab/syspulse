@@ -4,7 +4,7 @@ Claude Code·Codex 같은 에이전트에게 이 문서 링크를 주고 아래�
 
 > https://github.com/gook-lab/syspulse/blob/main/INSTALL.md 보고 SysPulse 설치해줘
 
-에이전트가 소스를 받아 이 맥에서 직접 빌드한 뒤 `~/Applications` 에 넣고 실행합니다. 직접 빌드한 앱이라 Gatekeeper 경고가 뜨지 않고, 관리자 권한도 필요 없습니다. 빌드는 15초 안팎, 전체는 1분 정도 걸립니다. 새 버전이 올라오면 앱이 팝오버 맨 위 배너와 알림으로 알려 주고, 「업데이트」 한 번이면 다시 빌드해 설치합니다. 에이전트에게 "SysPulse 업데이트해줘"라고 해도 됩니다.
+에이전트가 소스를 받아 이 맥에서 직접 빌드한 뒤 `~/Applications` 에 넣고 실행합니다. 직접 빌드한 앱이라 Gatekeeper 경고가 뜨지 않고, 관리자 권한도 필요 없습니다. 빌드는 15초 안팎, 전체는 1분 정도 걸립니다. 새 버전이 올라오면 팝오버 머리 줄의 「업데이트 N」과 알림으로 알려 주고, 누르면 다시 빌드해 설치합니다. 에이전트에게 "SysPulse 업데이트해줘"라고 해도 됩니다. v1.11 이전 버전에는 업데이트 기능이 없으니 이 문서 링크로 한 번 다시 설치해 주세요. 버전별 변경 내용은 [CHANGELOG.md](CHANGELOG.md) 에 있습니다.
 
 ## 설치 뒤 사람이 할 일 — 메뉴 막대 확인 · 로그인 시 실행
 
@@ -104,3 +104,4 @@ defaults delete lab.gook.syspulse
 | 경고 알림이 「스크립트 편집기」 이름으로 옴 | ad-hoc 서명 빌드는 알림 센터 권한이 거절되어 `osascript` 로 대신 띄움 | 정상 동작. 아예 안 오면 시스템 설정 → 알림 → 스크립트 편집기 켜기 |
 | Terminal·iTerm 세션 줄을 눌러도 탭이 안 바뀜 | 「자동화」 권한 거절 | 시스템 설정 → 개인정보 보호 및 보안 → 자동화 → SysPulse 에서 Terminal·iTerm 켜기 |
 | 업데이트를 눌렀는데 그대로임 | 소스 폴더에 로컬 수정이 있어 `git pull --ff-only` 실패 | 머리 줄 아래 빨간 실패 이유와 `~/Library/Logs/SysPulse-update.log` 확인 |
+| 「업데이트 실패 (종료 코드 0)」 | 설치는 끝났는데 옛 앱이 안 꺼짐 (v1.14 이전 `build.sh`) | 「업데이트」를 한 번 더 누르면 고친 `build.sh` 로 다시 켜짐. 또는 `pkill -x SysPulse; open ~/Applications/SysPulse.app` |
