@@ -8,8 +8,15 @@ enum Entry {
         if let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count {
             let tab = args.firstIndex(of: "--tab").flatMap { $0 + 1 < args.count ? ListTab(rawValue: args[$0 + 1]) : nil }
             let width = args.firstIndex(of: "--width").flatMap { $0 + 1 < args.count ? Double(args[$0 + 1]) : nil }
+            let duration = args.firstIndex(of: "--duration").flatMap { $0 + 1 < args.count ? Double(args[$0 + 1]) : nil }
             Snapshot.render(to: args[index + 1], tab: tab ?? .agents, confirmFirst: args.contains("--confirm-first"),
-                            width: width.map { CGFloat($0) })
+                            width: width.map { CGFloat($0) }, light: args.contains("--light"), duration: duration)
+            return
+        }
+        // --jump <pid>: 에이전트 줄 클릭과 같은 이동을 한 번 해 보고 끝낸다 (개발 확인용)
+        if let index = args.firstIndex(of: "--jump"), index + 1 < args.count, let pid = pid_t(args[index + 1]) {
+            SessionJump.jump(pid: pid, cwd: FileManager.default.currentDirectoryPath)
+            RunLoop.main.run(until: Date().addingTimeInterval(3))
             return
         }
         SysPulseApp.main()
@@ -155,8 +162,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         help = window
     }
 
-    // 고정 창을 띄울 때 열려 있던 메뉴 막대 팝오버는 닫는다
-    private func closeMenuBarPopover() {
+    // 고정 창을 띄울 때·세션 탭으로 이동할 때 열려 있던 메뉴 막대 팝오버는 닫는다
+    func closeMenuBarPopover() {
         for window in NSApp.windows where window.className.contains("MenuBarExtra") && window.isVisible {
             window.orderOut(nil)
         }
@@ -190,22 +197,31 @@ private struct NotchHelpView: View {
 }
 
 enum Snapshot {
-    @MainActor static func render(to path: String, tab: ListTab, confirmFirst: Bool = false, width: CGFloat? = nil) {
+    // --duration 초: 그동안 2초마다 샘플해 세션 추세까지 쌓는다 (추세는 2분 넘게 쌓여야 나온다)
+    @MainActor static func render(to path: String, tab: ListTab, confirmFirst: Bool = false, width: CGFloat? = nil,
+                                  light: Bool = false, duration: Double? = nil) {
         let monitor = SystemMonitor(autoStart: false)
-        for _ in 0..<8 {
-            Thread.sleep(forTimeInterval: 0.4)
+        let steps = duration.map { max(Int($0 / 2), 1) } ?? 8
+        for _ in 0..<steps {
+            Thread.sleep(forTimeInterval: duration == nil ? 0.4 : 2)
             monitor.sample()
+        }
+        for session in monitor.sessions {
+            let trend = session.trend.map { "\($0 / 1_048_576)MB/\(session.trendMinutes)분" } ?? "-"
+            FileHandle.standardError.write(Data(
+                "[syspulse:session] \(session.project) cpu=\(Format.cpu(session.cpu)) trend=\(trend)\n".utf8))
         }
         let content = VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Text("메뉴 막대").font(.caption).foregroundStyle(.secondary)
-                Image(nsImage: monitor.menuBarImage).renderingMode(.template).foregroundStyle(.white)
+                Image(nsImage: monitor.menuBarImage).renderingMode(.template)
+                    .foregroundStyle(light ? Color.black : Color.white)
             }
             .padding(.horizontal, 16).padding(.top, 12)
             DetailView(monitor: monitor, tabOverride: tab, previewConfirmFirstApp: confirmFirst, previewWidth: width)
         }
-        .background(Color(red: 0.15, green: 0.15, blue: 0.16))
-        .environment(\.colorScheme, .dark)
+        .background(light ? Color(white: 0.96) : Color(red: 0.15, green: 0.15, blue: 0.16))
+        .environment(\.colorScheme, light ? .light : .dark)
 
         let renderer = ImageRenderer(content: content)
         renderer.scale = 2

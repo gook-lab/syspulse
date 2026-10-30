@@ -11,21 +11,28 @@ struct AgentSession: Identifiable {
     let kind: String
     let project: String
     let cwd: String
+    let start: UInt64
     let agentFootprint: UInt64
+    let agentCPU: Double
     var children: [ProcessRecord]
     var detachedCount = 0
+    var trend: Int64? // 에이전트 프로세스 자체의 메모리 증감 (최근 최대 10분) — SystemMonitor 가 채운다
+    var trendMinutes = 0
 
+    var key: String { "\(id):\(start)" }
     var total: UInt64 { children.reduce(agentFootprint) { $0 + $1.footprint } }
+    var cpu: Double { children.reduce(agentCPU) { $0 + $1.cpu } }
 
-    // 「claude 620 MB · 하위 9개(분리 1) · rea, vite, server-memory」 — 이름 목록은 잘려도 되게 맨 뒤에
-    var detail: String {
-        let head = "\(kind) \(Format.bytes(agentFootprint))"
-        guard !children.isEmpty else { return head }
+    var detailHead: String { "\(kind) \(Format.bytes(agentFootprint))" }
+
+    // 「하위 9개(분리 1) · rea, vite, server-memory」 — 이름 목록은 잘려도 되게 맨 뒤에
+    var detailTail: String? {
+        guard !children.isEmpty else { return nil }
         var sizes: [String: UInt64] = [:]
         for child in children { sizes[AgentAnalysis.shortName(child.label), default: 0] += child.footprint }
         let top = sizes.sorted { $0.value > $1.value }.prefix(3).map(\.key)
         let count = "하위 \(children.count)개" + (detachedCount > 0 ? "(분리 \(detachedCount))" : "")
-        return [head, count, top.joined(separator: ", ")].joined(separator: " · ")
+        return count + " · " + top.joined(separator: ", ")
     }
 }
 
@@ -36,6 +43,7 @@ struct StrayTree: Identifiable {
     let port: Int?
     let started: Date
     let footprint: UInt64
+    let cpu: Double
     let members: [(pid: pid_t, start: UInt64)] // 루트가 먼저
 
     var title: String { port.map { "\(name) :\($0)" } ?? name }
@@ -72,7 +80,7 @@ enum AgentAnalysis {
         var sessions = records.filter(isAgent).map { agent in
             let cwd = Metrics.workingDirectory(of: agent.pid) ?? ""
             return AgentSession(id: agent.pid, kind: agent.command, project: projectLabel(cwd), cwd: cwd,
-                                agentFootprint: agent.footprint,
+                                start: agent.startSeconds, agentFootprint: agent.footprint, agentCPU: agent.cpu,
                                 children: descendants(of: agent.pid, stopAtAgents: true))
         }
 
@@ -97,6 +105,7 @@ enum AgentAnalysis {
                 port: port(in: tree.flatMap(\.args)),
                 started: root.started,
                 footprint: tree.reduce(0) { $0 + $1.footprint },
+                cpu: tree.reduce(0) { $0 + $1.cpu },
                 members: tree.map { ($0.pid, $0.startSeconds) }))
         }
         return (sessions.sorted { $0.total > $1.total }, strays.sorted { $0.footprint > $1.footprint })

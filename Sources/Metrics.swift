@@ -54,11 +54,13 @@ struct ProcessRecord {
     let ppid: pid_t
     let startSeconds: UInt64 // PID 재사용 확인용
     let footprint: UInt64
+    let cpuNanos: UInt64 // 부팅 후 누적 CPU 시간 (user + system)
     let path: String
     let appBundle: String?
     let args: [String] // 앱 밖 프로세스만 읽는다
     let command: String // argv[0] 이름 (앱은 앱 이름)
     let label: String // 묶음 이름: 앱 이름 또는 「node · vite」
+    var cpu: Double = 0 // 직전 샘플 이후 사용률 (코어 1개 = 1.0) — SystemMonitor 가 채운다
 
     var started: Date { Date(timeIntervalSince1970: TimeInterval(startSeconds)) }
 }
@@ -160,14 +162,15 @@ enum Metrics {
         var nameBuf = [CChar](repeating: 0, count: 256)
         var argBuf = [UInt8](repeating: 0, count: max(sysctlInt("kern.argmax") ?? 0, 262_144))
         for pid in pids.prefix(min(max(listed, 0), capacity)) where pid > 0 {
-            guard let footprint = footprint(of: pid), let bsd = bsdInfo(of: pid),
+            guard let usage = usage(of: pid), let bsd = bsdInfo(of: pid),
                   proc_pidpath(pid, &pathBuf, UInt32(pathBuf.count)) > 0 else { continue }
             let path = string(from: pathBuf)
 
             if let bundle = outermostAppBundle(in: path) {
                 let name = String((bundle as NSString).lastPathComponent.dropLast(4))
                 records.append(ProcessRecord(pid: pid, ppid: pid_t(bsd.pbi_ppid), startSeconds: bsd.pbi_start_tvsec,
-                                             footprint: footprint, path: path, appBundle: bundle, args: [],
+                                             footprint: usage.footprint, cpuNanos: usage.cpuNanos,
+                                             path: path, appBundle: bundle, args: [],
                                              command: name, label: name))
                 continue
             }
@@ -176,21 +179,31 @@ enum Metrics {
                 ? string(from: nameBuf) : basename(path)
             let described = describe(args: args)
             records.append(ProcessRecord(pid: pid, ppid: pid_t(bsd.pbi_ppid), startSeconds: bsd.pbi_start_tvsec,
-                                         footprint: footprint, path: path, appBundle: nil, args: args,
+                                         footprint: usage.footprint, cpuNanos: usage.cpuNanos,
+                                         path: path, appBundle: nil, args: args,
                                          command: described?.command ?? fallback,
                                          label: stripVersion(described?.label ?? fallback)))
         }
         return records
     }
 
-    static func footprint(of pid: pid_t) -> UInt64? {
+    // ri_user_time·ri_system_time 은 나노초가 아니라 mach 틱이다 (애플 실리콘 1틱 = 125/3 ns, 실측 확인)
+    static let nanosPerTick: Double = {
+        var info = mach_timebase_info()
+        mach_timebase_info(&info)
+        return Double(info.numer) / Double(info.denom)
+    }()
+
+    static func usage(of pid: pid_t) -> (footprint: UInt64, cpuNanos: UInt64)? {
         var usage = rusage_info_v4()
         let ok = withUnsafeMutablePointer(to: &usage) {
             $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
                 proc_pid_rusage(pid, RUSAGE_INFO_V4, $0) == 0
             }
         }
-        return ok && usage.ri_phys_footprint > 0 ? usage.ri_phys_footprint : nil
+        guard ok, usage.ri_phys_footprint > 0 else { return nil }
+        let ticks = usage.ri_user_time + usage.ri_system_time
+        return (usage.ri_phys_footprint, UInt64(Double(ticks) * nanosPerTick))
     }
 
     static func bsdInfo(of pid: pid_t) -> proc_bsdinfo? {
@@ -304,6 +317,35 @@ enum Metrics {
             index += 1
         }
         return args
+    }
+
+    // 환경 변수 중 keys 에 든 것만 돌려준다. 나머지(토큰·키 등)는 문자열로 만들지도 않고 버린다.
+    // argv 뒤에 "KEY=VALUE" 가 빈 문자열이 나올 때까지 이어진다 (KERN_PROCARGS2).
+    static func environment(of pid: pid_t, keys: Set<String>) -> [String: String] {
+        var buffer = [UInt8](repeating: 0, count: sysctlInt("kern.argmax") ?? 1 << 20)
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = buffer.count
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > 4 else { return [:] }
+        let argc = Int(buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) })
+        var index = 4
+        while index < size, buffer[index] != 0 { index += 1 }
+        while index < size, buffer[index] == 0 { index += 1 }
+        for _ in 0..<argc {
+            while index < size, buffer[index] != 0 { index += 1 }
+            index += 1
+        }
+        let prefixes = keys.map { (key: $0, bytes: Array(($0 + "=").utf8)) }
+        var found: [String: String] = [:]
+        while index < size, buffer[index] != 0 {
+            let start = index
+            while index < size, buffer[index] != 0 { index += 1 }
+            let entry = buffer[start..<index]
+            if let match = prefixes.first(where: { entry.starts(with: $0.bytes) }) {
+                found[match.key] = String(decoding: entry.dropFirst(match.bytes.count), as: UTF8.self)
+            }
+            index += 1
+        }
+        return found
     }
 
     // MARK: 하드웨어

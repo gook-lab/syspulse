@@ -7,10 +7,12 @@ struct ProcessRow: Identifiable {
     let id: String
     let name: String
     let footprint: UInt64
+    let cpu: Double
     let members: [(pid: pid_t, start: UInt64)]
     let bundlePath: String?
     let killable: Bool
-    let hostedAgents: Int // 이 묶음 안(조상)에서 도는 에이전트 수 — Orca 를 끄면 그 터미널의 에이전트도 끝난다
+    let hostedAgents: Int // 이 묶음 안(조상)에서 도는 에이전트 수 — 그 앱을 끄면 에이전트도 끝난다
+    let symbol: String? // 실행 파일 아이콘이 의미 없는 줄(claude 등)은 SF Symbol 로
     let icon: NSImage
 
     var count: Int { members.count }
@@ -37,6 +39,7 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var alerts: [String] = []
     @Published private(set) var alertThresholdGB: Int
     @Published private(set) var loginError: String?
+    @Published private(set) var usage: [AgentUsage] = []
 
     let hardware = Metrics.hardware()
     let bootDate = Metrics.bootDate()
@@ -48,6 +51,12 @@ final class SystemMonitor: ObservableObject {
     private var lastNotified: Date?
     private var icons: [String: NSImage] = [:]
     private var timer: Timer?
+    private var lastCPU: [pid_t: (start: UInt64, nanos: UInt64)] = [:]
+    private var lastCPUSample: Date?
+    private var samples = 0
+    private var agentHistory: [String: [(time: Date, footprint: UInt64)]] = [:]
+    private static let trendWindow: TimeInterval = 600 // 최근 10분
+    private static let trendMinimumSpan: TimeInterval = 120 // 2분은 쌓여야 추세로 본다
 
     init(autoStart: Bool = true) {
         let saved = UserDefaults.standard.integer(forKey: Self.thresholdKey)
@@ -75,11 +84,54 @@ final class SystemMonitor: ObservableObject {
             updateSwapRate(info.swapOutBytes)
         }
 
-        let records = Metrics.processes()
+        var records = Metrics.processes()
+        applyCPU(&records)
         apps = appRows(records)
-        (sessions, strays) = AgentAnalysis.analyze(records)
+        var analysis = AgentAnalysis.analyze(records)
+        applyTrends(&analysis.sessions)
+        (sessions, strays) = analysis
         loadAverage = Metrics.loadAverage()
+        if samples % 15 == 0 { usage = UsageReader.read() } // 사용량은 30초마다 (파일 몇 개만 읽는다)
+        samples += 1
         evaluateAlerts()
+    }
+
+    // MARK: 프로세스 CPU · 세션 추세
+
+    // 누적 CPU 시간의 두 시점 차이 ÷ 실제 경과 시간. PID 가 재사용됐으면(시작 시각 다름) 새로 센다.
+    private func applyCPU(_ records: inout [ProcessRecord]) {
+        let now = Date()
+        let elapsed = lastCPUSample.map { now.timeIntervalSince($0) * 1e9 } ?? 0
+        var next: [pid_t: (start: UInt64, nanos: UInt64)] = [:]
+        for index in records.indices {
+            let record = records[index]
+            if elapsed > 0, let prev = lastCPU[record.pid], prev.start == record.startSeconds,
+               record.cpuNanos >= prev.nanos {
+                records[index].cpu = Double(record.cpuNanos - prev.nanos) / elapsed
+            }
+            next[record.pid] = (record.startSeconds, record.cpuNanos)
+        }
+        lastCPU = next
+        lastCPUSample = now
+    }
+
+    // 하위 프로세스(vitest 등)는 떴다 사라지며 출렁이므로, 에이전트 프로세스 자체의 메모리로 추세를 본다
+    private func applyTrends(_ sessions: inout [AgentSession]) {
+        let now = Date()
+        var next: [String: [(time: Date, footprint: UInt64)]] = [:]
+        for index in sessions.indices {
+            let session = sessions[index]
+            var history = (agentHistory[session.key] ?? []).filter {
+                now.timeIntervalSince($0.time) <= Self.trendWindow
+            }
+            history.append((now, session.agentFootprint))
+            if let oldest = history.first, now.timeIntervalSince(oldest.time) >= Self.trendMinimumSpan {
+                sessions[index].trend = Int64(session.agentFootprint) - Int64(oldest.footprint)
+                sessions[index].trendMinutes = Int(now.timeIntervalSince(oldest.time) / 60)
+            }
+            next[session.key] = history
+        }
+        agentHistory = next
     }
 
     // MARK: 메뉴 막대 라벨
@@ -206,6 +258,7 @@ final class SystemMonitor: ObservableObject {
     private struct AppGroup {
         var first: ProcessRecord
         var footprint: UInt64 = 0
+        var cpu: Double = 0
         var members: [(pid: pid_t, start: UInt64)] = []
     }
 
@@ -216,15 +269,20 @@ final class SystemMonitor: ObservableObject {
             let key = record.appBundle ?? "proc:" + record.label
             groups[key, default: AppGroup(first: record)].footprint += record.footprint
             groups[key]?.members.append((record.pid, record.startSeconds))
+            groups[key]?.cpu += record.cpu
             keyOfPid[record.pid] = key
         }
         let hosted = Self.hostedAgentCounts(records, keyOfPid: keyOfPid)
         let protected = Self.ownAncestry()
-        return groups.sorted { $0.value.footprint > $1.value.footprint }.prefix(8).map { key, group in
-            ProcessRow(id: key, name: group.first.label, footprint: group.footprint, members: group.members,
+        // 정렬(메모리·CPU)은 화면에서 고른다 — 작은 묶음은 미리 걸러 둔다
+        let candidates = groups.filter { $0.value.footprint >= 20 * 1_048_576 || $0.value.cpu >= 0.01 }
+        return candidates.sorted { $0.value.footprint > $1.value.footprint }.prefix(40).map { key, group in
+            ProcessRow(id: key, name: group.first.label, footprint: group.footprint, cpu: group.cpu,
+                       members: group.members,
                        bundlePath: group.first.appBundle,
                        killable: Self.isKillable(group.first) && !group.members.contains { protected.contains($0.pid) },
                        hostedAgents: hosted[key] ?? 0,
+                       symbol: AgentAnalysis.isAgent(group.first) ? "terminal" : nil,
                        icon: icon(for: group.first.appBundle ?? group.first.path))
         }
     }
@@ -319,6 +377,11 @@ enum Format {
         String(format: "%.0f MB/s", bytesPerSecond / mib)
     }
 
+    // 활성 상태 보기와 같은 표기: 코어 하나를 다 쓰면 100%, 여러 코어면 100% 를 넘는다
+    static func cpu(_ cores: Double) -> String {
+        "\(Int((max(cores, 0) * 100).rounded()))%"
+    }
+
     static func percent(_ ratio: Double) -> String {
         "\(Int((min(max(ratio, 0), 1) * 100).rounded()))%"
     }
@@ -337,6 +400,22 @@ enum Format {
         if minutes < 60 { return "\(minutes)분 전 시작" }
         if minutes < 1440 { return "\(minutes / 60)시간 전 시작" }
         return "\(minutes / 1440)일 전 시작"
+    }
+
+    // 초기화까지 남은 시간 — Orca 상태 줄처럼 짧게 (2h 20m · 3d 2h · 45m)
+    static func countdown(to date: Date) -> String {
+        let minutes = max(Int(date.timeIntervalSinceNow / 60), 0)
+        let days = minutes / 1440, hours = minutes / 60 % 24, mins = minutes % 60
+        if days > 0 { return "\(days)d \(hours)h" }
+        if hours > 0 { return "\(hours)h \(mins)m" }
+        return "\(mins)m"
+    }
+
+    static func ago(_ date: Date) -> String {
+        let minutes = Int(Date().timeIntervalSince(date) / 60)
+        if minutes < 60 { return "\(minutes)분 전 값" }
+        if minutes < 1440 { return "\(minutes / 60)시간 전 값" }
+        return "\(minutes / 1440)일 전 값"
     }
 
     static func thermal(_ state: ProcessInfo.ThermalState) -> String {

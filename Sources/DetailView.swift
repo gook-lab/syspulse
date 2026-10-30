@@ -21,6 +21,10 @@ enum ListTab: String {
     case agents, strays, apps
 }
 
+enum SortKey: String {
+    case memory, cpu
+}
+
 struct DetailView: View {
     static let popoverWidth: CGFloat = 340
     static let twoColumnWidth: CGFloat = 640 // 이보다 넓으면 왼쪽 시스템 · 오른쪽 목록 두 열
@@ -31,8 +35,10 @@ struct DetailView: View {
     var previewConfirmFirstApp = false // 스냅샷 전용: 종료 확인 상태 줄을 하나 그린다
     var previewWidth: CGFloat? // 스냅샷 전용: 고정 창 폭 흉내
     @AppStorage("listTab") private var storedTab = ListTab.agents.rawValue
+    @AppStorage("sortKey") private var storedSort = SortKey.memory.rawValue
 
     private var tab: ListTab { tabOverride ?? ListTab(rawValue: storedTab) ?? .agents }
+    private var sort: SortKey { SortKey(rawValue: storedSort) ?? .memory }
 
     var body: some View {
         switch mode {
@@ -75,17 +81,19 @@ struct DetailView: View {
         CPUSection(monitor: monitor)
         Separator()
         MemorySection(monitor: monitor)
+        Separator()
+        UsageSection(usage: monitor.usage)
     }
 
     @ViewBuilder
     private var listColumn: some View {
-        TabPicker(selection: tab, agentCount: monitor.sessions.count, strayCount: monitor.strays.count) {
-            storedTab = $0.rawValue
-        }
+        TabPicker(selection: tab, agentCount: monitor.sessions.count, strayCount: monitor.strays.count,
+                  sort: sort, onSelect: { storedTab = $0.rawValue },
+                  onToggleSort: { storedSort = (sort == .memory ? SortKey.cpu : .memory).rawValue })
         switch tab {
-        case .agents: AgentsSection(monitor: monitor)
-        case .strays: StraysSection(monitor: monitor)
-        case .apps: AppsSection(monitor: monitor, previewConfirmFirst: previewConfirmFirstApp)
+        case .agents: AgentsSection(monitor: monitor, sort: sort, mode: mode)
+        case .strays: StraysSection(monitor: monitor, sort: sort)
+        case .apps: AppsSection(monitor: monitor, sort: sort, previewConfirmFirst: previewConfirmFirstApp)
         }
         Separator()
         SettingsRow(monitor: monitor)
@@ -240,19 +248,157 @@ private struct MemorySection: View {
     }
 }
 
+// MARK: - 구독 사용량
+
+// Orca 상태 줄과 같은 꼴: 「Claude ▬ 17% 2h 20m · 주간 ▬ 82% 3d 2h」. 색은 claude-hud 의 페이스 기준.
+private struct UsageSection: View {
+    let usage: [AgentUsage]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("구독 사용량").font(.subheadline.weight(.semibold))
+            ForEach(usage) { agent in UsageRow(agent: agent) }
+            if !usage.contains(where: { $0.id == "claude" }) {
+                Text("Claude 는 claude-hud 설정 display.externalUsageWritePath 를 켜면 보입니다")
+                    .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+private struct UsageRow: View {
+    let agent: AgentUsage
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { name; windows; Spacer(minLength: 0); stale }
+            // 오래된 값 표시가 안 들어가면 줄을 흐리게 하고 툴팁으로 알린다
+            HStack(spacing: 8) { name; windows }
+                .opacity(staleText == nil ? 1 : 0.55)
+                .help(staleText ?? "")
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) { name; stale }
+                windows
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) { name; stale }
+                ForEach(agent.windows) { UsageWindowView(window: $0) }
+            }
+        }
+        .font(.caption)
+    }
+
+    private var name: some View {
+        Text(agent.name).fontWeight(.medium).frame(minWidth: 44, alignment: .leading).fixedSize()
+    }
+
+    private var windows: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(agent.windows.enumerated()), id: \.element.id) { index, window in
+                if index > 0 { Text("·").foregroundStyle(.tertiary) }
+                UsageWindowView(window: window)
+            }
+        }
+        .fixedSize()
+    }
+
+    // 값이 15분 넘게 안 바뀌었으면 언제 값인지 붙인다 (Claude 는 Claude Code 상태 줄이 그려질 때만 갱신된다)
+    private var staleText: String? {
+        guard let reported = agent.reportedAt, Date().timeIntervalSince(reported) > 900 else { return nil }
+        return Format.ago(reported)
+    }
+
+    @ViewBuilder
+    private var stale: some View {
+        if let staleText {
+            Text(staleText).font(.caption2).foregroundStyle(.tertiary).fixedSize()
+        }
+    }
+}
+
+private struct UsageWindowView: View {
+    let window: UsageWindow
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(window.label).foregroundStyle(.secondary)
+            QuotaBar(percent: window.isReset ? 0 : window.usedPercent, color: color).frame(width: 28, height: 5)
+            Text("\(Int(window.usedPercent.rounded()))%").monospacedDigit()
+                .foregroundStyle(window.isReset ? Color.secondary : color == Palette.user ? Color.primary : color)
+            Text(resetText).monospacedDigit().foregroundStyle(.secondary)
+        }
+        .fixedSize()
+        .help(help)
+    }
+
+    private var color: Color {
+        switch window.pace {
+        case .normal: Palette.user
+        case .warning: .orange
+        case .critical: .red
+        }
+    }
+
+    private var resetText: String {
+        guard let resetsAt = window.resetsAt else { return "" }
+        return window.isReset ? "초기화됨" : Format.countdown(to: resetsAt)
+    }
+
+    private var help: String {
+        var text = "\(window.label) 한도의 \(Int(window.usedPercent.rounded()))% 사용"
+        if let resetsAt = window.resetsAt {
+            text += " · " + resetsAt.formatted(date: .abbreviated, time: .shortened) + " 초기화"
+        }
+        switch window.pace {
+        case .normal: break
+        case .warning: text += " · 이 속도면 초기화 전에 90% 를 넘습니다"
+        case .critical: text += window.usedPercent >= 90 ? " · 거의 다 썼습니다" : " · 이 속도면 초기화 전에 한도를 넘습니다"
+        }
+        return text
+    }
+}
+
+private struct QuotaBar: View {
+    let percent: Double
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Palette.track)
+                Capsule().fill(color).frame(width: max(2, geo.size.width * min(percent, 100) / 100))
+            }
+        }
+    }
+}
+
 // MARK: - 목록 탭
 
 private struct TabPicker: View {
     let selection: ListTab
     let agentCount: Int
     let strayCount: Int
+    let sort: SortKey
     let onSelect: (ListTab) -> Void
+    let onToggleSort: () -> Void
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 4) { buttons(compact: false); Spacer(minLength: 0) }
-            HStack(spacing: 2) { buttons(compact: true); Spacer(minLength: 0) }
+            HStack(spacing: 4) { buttons(compact: false); Spacer(minLength: 4); sortButton }
+            HStack(spacing: 2) { buttons(compact: true); Spacer(minLength: 2); sortButton }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 2) { buttons(compact: true) }
+                sortButton
+            }
         }
+    }
+
+    private var sortButton: some View {
+        Button(action: onToggleSort) {
+            Label(sort == .memory ? "메모리순" : "CPU순", systemImage: "arrow.up.arrow.down")
+        }
+        .buttonStyle(TabButtonStyle(selected: false, compact: true))
+        .help("메모리순 ↔ CPU순")
     }
 
     @ViewBuilder
@@ -270,6 +416,13 @@ private struct TabPicker: View {
 
 private struct AgentsSection: View {
     @ObservedObject var monitor: SystemMonitor
+    let sort: SortKey
+    let mode: DetailMode
+
+    // 기본은 메모리순(SystemMonitor 가 이미 그 순서로 준다)
+    private var sessions: [AgentSession] {
+        sort == .cpu ? monitor.sessions.sorted { $0.cpu > $1.cpu } : monitor.sessions
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -278,7 +431,7 @@ private struct AgentsSection: View {
             } else {
                 Text(summary).font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     .fixedSize(horizontal: false, vertical: true)
-                ForEach(monitor.sessions.prefix(8)) { session in SessionRow(session: session) }
+                ForEach(sessions.prefix(8)) { session in SessionRow(session: session, mode: mode) }
                 if monitor.sessions.count > 8 {
                     Text("외 \(monitor.sessions.count - 8)개").font(.caption).foregroundStyle(.secondary)
                 }
@@ -289,19 +442,26 @@ private struct AgentsSection: View {
     private var summary: String {
         let total = monitor.sessions.reduce(UInt64(0)) { $0 + $1.total }
         let count = monitor.sessions.count
+        let cpu = monitor.sessions.reduce(0) { $0 + $1.cpu }
         return "에이전트 \(count)개 · 합계 \(Format.bytes(total)) · 평균 \(Format.bytes(total / UInt64(count)))"
+            + " · CPU \(Format.cpu(cpu))"
     }
 }
 
 private struct StraysSection: View {
     @ObservedObject var monitor: SystemMonitor
+    let sort: SortKey
+
+    private var strays: [StrayTree] {
+        sort == .cpu ? monitor.strays.sorted { $0.cpu > $1.cpu } : monitor.strays
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if monitor.strays.isEmpty {
                 Text("모든 dev 프로세스가 에이전트 세션에 연결돼 있습니다").font(.callout).foregroundStyle(.secondary)
             } else {
-                ForEach(monitor.strays.prefix(8)) { stray in StrayRow(stray: stray, monitor: monitor) }
+                ForEach(strays.prefix(8)) { stray in StrayRow(stray: stray, monitor: monitor) }
             }
             Text("부모 에이전트도, 작업 폴더가 겹치는 세션도 찾지 못한 node·python 등입니다. 끝난 세션이 남긴 dev 서버일 수 있지만, 직접 띄운 서비스일 수도 있습니다.")
                 .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
@@ -309,22 +469,49 @@ private struct StraysSection: View {
     }
 }
 
+// 누르면 그 세션의 Orca 탭(또는 띄운 앱)으로 간다 — SessionJump
 private struct SessionRow: View {
     let session: AgentSession
+    let mode: DetailMode
+    @State private var hovering = false
 
     var body: some View {
+        Button {
+            SessionJump.jump(to: session)
+            if mode == .popover { WindowController.shared.closeMenuBarPopover() }
+        } label: {
+            content
+        }
+        .buttonStyle(RowButtonStyle(hovering: hovering))
+        .onHover { hovering = $0 }
+        .help("눌러서 이 세션의 창·탭으로 이동")
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 6) {
                 Image(systemName: "terminal").font(.caption).foregroundStyle(.secondary).frame(width: 16)
                 Text(session.project).lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 8)
+                CPUText(cores: session.cpu)
                 Text(Format.bytes(session.total)).monospacedDigit()
             }
             .font(.callout)
-            Text(session.detail)
+            detailText
                 .font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                 .padding(.leading, 22)
         }
+    }
+
+    // 「claude 791 MB ▲320 MB/10분 · 하위 19개 · vite, vitest, rea」 — 에이전트 자체가 계속 커지면 주황
+    private var detailText: Text {
+        var text = Text(session.detailHead)
+        if let trend = session.trend, abs(trend) >= 50 * 1_048_576 {
+            let change = (trend > 0 ? " ▲" : " ▼") + Format.bytes(UInt64(abs(trend))) + "/\(session.trendMinutes)분"
+            text = text + Text(change).foregroundColor(trend >= 200 * 1_048_576 ? .orange : .secondary)
+        }
+        if let tail = session.detailTail { text = text + Text(" · " + tail) }
+        return text
     }
 }
 
@@ -340,6 +527,7 @@ private struct StrayRow: View {
                 Text(stray.subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 6)
+            CPUText(cores: stray.cpu)
             Text(Format.bytes(stray.footprint)).monospacedDigit()
             // 두 번 눌러야 끈다 — 4초 안에 「확인」을 누르지 않으면 되돌아간다
             Button(confirming ? "확인" : "종료") {
@@ -359,11 +547,16 @@ private struct StrayRow: View {
 
 private struct AppsSection: View {
     @ObservedObject var monitor: SystemMonitor
+    let sort: SortKey
     var previewConfirmFirst = false
+
+    private var rows: [ProcessRow] {
+        Array((sort == .cpu ? monitor.apps.sorted { $0.cpu > $1.cpu } : monitor.apps).prefix(8))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(monitor.apps) { row in
+            ForEach(rows) { row in
                 AppRow(row: row, monitor: monitor, confirming: previewConfirmFirst && row.id == previewRowID)
             }
             Text("내 계정 프로세스 기준 · 같은 앱의 헬퍼와 같은 이름의 프로세스는 합산 · ⓧ 로 종료")
@@ -373,7 +566,7 @@ private struct AppsSection: View {
 
     // 스냅샷 미리보기: 에이전트를 품은 앱(경고 문구가 보이는 줄) 우선
     private var previewRowID: String? {
-        (monitor.apps.first { $0.killable && $0.hostedAgents > 0 } ?? monitor.apps.first { $0.killable })?.id
+        (rows.first { $0.killable && $0.hostedAgents > 0 } ?? rows.first { $0.killable })?.id
     }
 }
 
@@ -391,12 +584,17 @@ private struct AppRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Image(nsImage: row.icon).resizable().frame(width: 16, height: 16)
+                if let symbol = row.symbol {
+                    Image(systemName: symbol).font(.caption).foregroundStyle(.secondary).frame(width: 16, height: 16)
+                } else {
+                    Image(nsImage: row.icon).resizable().frame(width: 16, height: 16)
+                }
                 Text(row.name).lineLimit(1).truncationMode(.middle)
                 if row.count > 1 {
                     Text("×\(row.count)").foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
+                CPUText(cores: row.cpu)
                 Text(Format.bytes(row.footprint)).monospacedDigit()
                 if row.killable {
                     Button { confirming.toggle() } label: {
@@ -540,6 +738,18 @@ private struct SectionTitle: View {
             Text(title).font(.subheadline.weight(.semibold))
             Text(value).font(.title3.weight(.semibold)).monospacedDigit()
         }
+    }
+}
+
+// 코어 하나를 넘게 쓰면(100% 이상) 주황, 거의 안 쓰면 흐리게
+private struct CPUText: View {
+    let cores: Double
+
+    var body: some View {
+        Text(Format.cpu(cores))
+            .font(.caption).monospacedDigit()
+            .foregroundStyle(cores >= 1 ? Color.orange : Color.secondary.opacity(cores >= 0.01 ? 1 : 0.5))
+            .frame(minWidth: 34, alignment: .trailing)
     }
 }
 
@@ -708,6 +918,19 @@ private struct TabButtonStyle: ButtonStyle {
             .background(Capsule().fill(Color.primary.opacity(selected ? 0.14 : configuration.isPressed ? 0.08 : 0)))
             .contentShape(Capsule())
             .fixedSize()
+    }
+}
+
+private struct RowButtonStyle: ButtonStyle {
+    let hovering: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 6)
+                .fill(Color.primary.opacity(configuration.isPressed ? 0.12 : hovering ? 0.06 : 0)))
+            .contentShape(Rectangle())
+            .padding(.horizontal, -6).padding(.vertical, -3)
     }
 }
 
