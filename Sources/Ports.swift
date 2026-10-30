@@ -9,6 +9,7 @@ struct ListeningPort: Identifiable, Sendable {
     let name: String // 「node · vite」
     let cwd: String?
     let owner: String? // 이 서버를 띄운 에이전트 세션
+    let isAgent: Bool // 에이전트 프로세스 자신이 연 포트 (codex app-server 등) — 포트 탭에서 끄지 않는다
     var branch: String?
 
     var id: String { "\(port)-\(pid)" }
@@ -17,13 +18,14 @@ struct ListeningPort: Identifiable, Sendable {
 
 enum PortScanner {
     // 작업 폴더가 / 인 것(rapportd 같은 시스템·보안 데몬)은 dev 서버가 아니라 뺀다
-    static func scan(_ records: [ProcessRecord], owners: [pid_t: String]) -> [ListeningPort] {
+    static func scan(_ records: [ProcessRecord], owners: [pid_t: String], agents: Set<pid_t> = []) -> [ListeningPort] {
         records.filter { $0.appBundle == nil }.flatMap { record -> [ListeningPort] in
             let ports = listeningPorts(of: record.pid)
             guard !ports.isEmpty, let cwd = Metrics.workingDirectory(of: record.pid), cwd != "/" else { return [] }
             return ports.map { port in
                 ListeningPort(port: port, pid: record.pid, start: record.startSeconds,
-                              name: AgentAnalysis.shortName(record.label), cwd: cwd, owner: owners[record.pid])
+                              name: AgentAnalysis.shortName(record.label), cwd: cwd, owner: owners[record.pid],
+                              isAgent: agents.contains(record.pid))
             }
         }
         .sorted { ($0.port, $0.pid) < ($1.port, $1.pid) }

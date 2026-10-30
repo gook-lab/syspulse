@@ -271,7 +271,7 @@ final class SystemMonitor: ObservableObject {
             owners[session.id] = session.project
             for child in session.children { owners[child.pid] = session.project }
         }
-        var found = PortScanner.scan(lastRecords, owners: owners)
+        var found = PortScanner.scan(lastRecords, owners: owners, agents: Set(sessions.map(\.id)))
         for index in found.indices { found[index].branch = found[index].cwd.flatMap { branches[$0] } }
         ports = found
         // 새 폴더는 바로, 전부는 1분마다 다시 묻는다 (같은 worktree 에서 git switch 해도 따라가게). 사라진 서버 폴더는 잊는다.
@@ -552,6 +552,14 @@ final class SystemMonitor: ObservableObject {
 
     // MARK: 세션 밖 프로세스 종료
 
+    // 포트 탭의 × — 그 서버 프로세스만 끈다 (npm exec·pnpm 같은 감싼 부모는 자식이 끝나면 따라 끝난다).
+    // pid 가 재사용됐으면(시작 시각이 다르면) 건드리지 않는다.
+    func stopServer(_ port: ListeningPort, force: Bool = false) {
+        guard Metrics.bsdInfo(of: port.pid)?.pbi_start_tvsec == port.start else { return refreshPorts() }
+        kill(port.pid, force ? SIGKILL : SIGTERM)
+        track("port:\(port.pid)", members: [(port.pid, port.start)], force: force)
+    }
+
     func terminate(_ stray: StrayTree) {
         AgentAnalysis.terminate(stray)
         track("stray:\(stray.id)", members: stray.members, force: false)
@@ -574,6 +582,7 @@ final class SystemMonitor: ObservableObject {
                 if !alive || elapsed > 60 {
                     self.quitting[key] = nil
                     self.sample()
+                    if key.hasPrefix("port:") { self.refreshPorts() }
                     return
                 }
                 if !progress.stalled, elapsed > (progress.force ? 5 : 8) {

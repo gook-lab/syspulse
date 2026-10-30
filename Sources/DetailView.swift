@@ -697,7 +697,7 @@ private struct PortsSection: View {
                 Text("앱 밖 프로세스가 연 포트가 없습니다").font(.callout).foregroundStyle(.secondary)
             } else {
                 ForEach(monitor.ports.prefix(14)) { port in
-                    PortRow(port: port, shared: monitor.ports.filter { $0.port == port.port }.count > 1, mode: mode)
+                    PortRow(port: port, shared: monitor.ports.filter { $0.port == port.port }.count > 1, mode: mode, monitor: monitor)
                 }
                 if monitor.ports.count > 14 {
                     Text("외 \(monitor.ports.count - 14)개").font(.caption).foregroundStyle(.secondary)
@@ -713,9 +713,47 @@ private struct PortRow: View {
     let port: ListeningPort
     let shared: Bool // 같은 포트를 다른 프로세스도 열었다 (주소만 다르게) — 어느 쪽이 응답할지 헷갈린다
     let mode: DetailMode
+    @ObservedObject var monitor: SystemMonitor
     @State private var hovering = false
+    @State private var confirming = false
 
     var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            openButton
+            if !port.isAgent { stopControl.padding(.top, 2) }
+        }
+    }
+
+    // × → 「확인」 두 번 눌러야 끈다 (4초 안에 확인하지 않으면 되돌아간다). 정상 종료 8초 무응답이면 강제 종료를 권한다
+    @ViewBuilder
+    private var stopControl: some View {
+        if let progress = monitor.quitting["port:\(port.pid)"] {
+            if progress.stalled && !progress.force {
+                Button("강제 종료") { monitor.stopServer(port, force: true) }
+                    .buttonStyle(PillButtonStyle(tint: .red))
+            } else {
+                QuittingLabel(stalled: progress.stalled)
+            }
+        } else if confirming {
+            Button("확인") {
+                confirming = false
+                monitor.stopServer(port)
+            }
+            .buttonStyle(PillButtonStyle(tint: .red))
+            .help("pid \(port.pid) \(port.name) 종료")
+        } else {
+            Button {
+                confirming = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { confirming = false }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .buttonStyle(GlyphButtonStyle(tint: .secondary))
+            .help("이 서버 종료")
+        }
+    }
+
+    private var openButton: some View {
         Button {
             if let url = URL(string: "http://localhost:\(port.port)") { NSWorkspace.shared.open(url) }
             if mode == .popover { WindowController.shared.closeMenuBarPopover() }
