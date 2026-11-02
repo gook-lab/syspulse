@@ -98,6 +98,7 @@ defaults delete lab.gook.syspulse
 
 | 증상 | 원인 | 해결 |
 |---|---|---|
+| 메뉴 막대에 아이콘이 두 개 | v1.19 이하에서 빌드본과 설치본이 둘 다 떠 있음(재부팅 때 「창 다시 열기」가 둘 다 되살림) | 「업데이트」 또는 `./build.sh install` 로 v1.21 이상 설치. 지금 떠 있는 둘은 `pkill -x SysPulse; open ~/Applications/SysPulse.app` |
 | 메뉴 막대에 아이콘이 없음 | 메뉴 막대가 노치까지 차서 새 아이콘이 가려짐 | 안내 창의 「고정 창으로 보기」, 또는 ⌘ 를 누른 채 안 쓰는 아이콘을 메뉴 막대 밖으로 끌어내기 |
 | `xcrun: error: invalid active developer path` | Command Line Tools 없음 | 1단계의 `xcode-select --install` |
 | 구독 사용량 칸이 비어 있음 | Orca 없음, claude-hud 설정 없음 | 5단계 |
