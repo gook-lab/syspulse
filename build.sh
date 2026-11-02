@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 사용법: ./build.sh            → build/SysPulse.app (애플 실리콘 + 인텔 공용)
-#         ./build.sh install    → ~/Applications 로 복사 후 실행
+#         ./build.sh install    → ~/Applications 로 복사 후 실행 (빌드본은 지운다)
 #         ARCHS=arm64 ./build.sh → 한 아키텍처만 (개발 중 빠른 빌드)
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -40,6 +40,9 @@ if [[ "${1:-}" == "install" ]]; then
   mkdir -p ~/Applications
   rm -rf ~/Applications/SysPulse.app
   cp -R "$APP" ~/Applications/
+  # 빌드본을 남기면 Launch Services 에 앱이 둘 등록되고, 띄워 둔 채 재부팅하면 메뉴 막대에 둘 뜬다
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP" 2>/dev/null || true
+  rm -rf "$APP"
   open ~/Applications/SysPulse.app
   echo "installed ~/Applications/SysPulse.app"
 fi

@@ -12,7 +12,7 @@ Xcode 프로젝트 없이 `swiftc` 로 바로 `.app` 을 만듭니다 (macOS 14 
 
 ```bash
 ./build.sh                  # build/SysPulse.app
-./build.sh install          # ~/Applications 로 복사 후 실행
+./build.sh install          # ~/Applications 로 복사 후 실행 (빌드본은 지움 — 앱이 한 곳에만 남게)
 ARCHS=arm64 ./build.sh      # 한 아키텍처만 (개발 중 빠른 빌드)
 build/SysPulse.app/Contents/MacOS/SysPulse --self-test  # 판정 규칙 확인 (build.sh 가 빌드마다 돌리고, 실패하면 멈춤)
 
