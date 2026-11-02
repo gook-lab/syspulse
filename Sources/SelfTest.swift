@@ -27,6 +27,12 @@ enum SelfTest {
         expect(worktree(changes: 5, missing: true).removable, "worktree: 폴더가 없으면 기록만 정리 가능")
         expect(!worktree(busy: ["vite"], missing: true).removable, "worktree: 폴더가 없어도 사용 중이면 불가")
 
+        // 중복 실행 — 설치본이 이기고, 같은 종류끼리는 새로 뜬 쪽이 남는다
+        expect(!SingleInstance.keepSelf(selfInstalled: false, othersInstalled: [true]), "중복 실행: 설치본이 떠 있으면 빌드본은 끝남")
+        expect(SingleInstance.keepSelf(selfInstalled: true, othersInstalled: [false]), "중복 실행: 설치본은 빌드본을 끄고 남음")
+        expect(SingleInstance.keepSelf(selfInstalled: true, othersInstalled: [true]), "중복 실행: 설치본끼리는 새 쪽이 남음")
+        expect(SingleInstance.keepSelf(selfInstalled: false, othersInstalled: [false]), "중복 실행: 빌드본끼리는 새 쪽이 남음")
+
         // 사용량 페이스 · 소진 예상 (5시간 창의 절반이 지남)
         let fiveHours: TimeInterval = 5 * 3600
         func window(_ used: Double, remaining: TimeInterval = fiveHours / 2) -> UsageWindow {

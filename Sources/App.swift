@@ -21,7 +21,35 @@ enum Entry {
             RunLoop.main.run(until: Date().addingTimeInterval(3))
             return
         }
+        if !SingleInstance.claim() { return }
         SysPulseApp.main()
+    }
+}
+
+// 메뉴 막대에 SysPulse 가 둘 뜨지 않게 한다. 레포의 build/SysPulse.app 을 띄워 둔 채 재부팅하면
+// macOS 가 「다시 로그인 시 창 다시 열기」로 설치본과 같이 되살린다 (2026-11-02 실측).
+enum SingleInstance {
+    /// 설치본(~/Applications · /Applications)이 이기고, 같은 종류끼리는 새로 뜬 쪽이 이긴다 (업데이트 재실행과 맞물림)
+    static func keepSelf(selfInstalled: Bool, othersInstalled: [Bool]) -> Bool {
+        selfInstalled || !othersInstalled.contains(true)
+    }
+
+    static func claim() -> Bool {
+        let me = NSRunningApplication.current
+        guard let id = Bundle.main.bundleIdentifier else { return true }
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: id)
+            .filter { $0.processIdentifier != me.processIdentifier && !$0.isTerminated }
+        guard !others.isEmpty else { return true }
+        guard keepSelf(selfInstalled: isInstalled(me.bundleURL), othersInstalled: others.map { isInstalled($0.bundleURL) })
+        else { return false }
+        others.forEach { $0.terminate() }
+        return true
+    }
+
+    private static func isInstalled(_ url: URL?) -> Bool {
+        guard let parent = url?.resolvingSymlinksInPath().deletingLastPathComponent().path else { return false }
+        let dirs = FileManager.default.urls(for: .applicationDirectory, in: [.userDomainMask, .localDomainMask])
+        return dirs.contains { $0.resolvingSymlinksInPath().path == parent }
     }
 }
 
